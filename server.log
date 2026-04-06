@@ -1,0 +1,10 @@
+127.0.0.1 - - [03/Apr/2026 04:27:21] "GET /verify_v4.html HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 04:27:21] "GET /content.js HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 04:27:21] "GET /styles.css HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:29:15] "GET /verify_v4.html HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:29:15] "GET /content.js HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:29:15] "GET /styles.css HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:30:00] "GET /verify_v4.html HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:30:17] "GET /verify_v4.html HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:30:17] "GET /styles.css HTTP/1.1" 200 -
+127.0.0.1 - - [03/Apr/2026 06:30:17] "GET /content.js HTTP/1.1" 200 -
