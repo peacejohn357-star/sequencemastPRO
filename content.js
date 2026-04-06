@@ -1173,8 +1173,19 @@
     if (last.result !== 'PENDING') return;
     last.result = res.result || 'LOSS';
     last.pnl = res.pnl || 0;
-    if (last.result === 'WIN') realWins++;
-    else realLosses++;
+    if (last.result === 'WIN') {
+      realWins++;
+    } else {
+      realLosses++;
+      // Stop on Loss logic
+      if (last.result === 'LOSS') {
+        cfg.realTradeEnabled = false;
+        saveCfg();
+        const reToggle = document.getElementById('tt-cfg-real-enabled');
+        if (reToggle) reToggle.checked = false;
+        showAlert('TRADING STOPPED: LOSS DETECTED');
+      }
+    }
     realPnl += last.pnl;
     const simTrade = last.signalRef || signals.find(s => s.result === 'PENDING' && s.isReal);
     if (simTrade) {
