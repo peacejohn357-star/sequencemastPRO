@@ -64,6 +64,8 @@
   let tickDirections = [];
   let speedHistory = [];
   let parsedSeqMasterConfig = null;
+  let parsedDnaConfig = null;
+  let dnaWorker = null;
   let sHigh = 0, sLow = 0, speedMean = 0, speedStd = 0, bbWidth = 0, prevBbWidth = 0;
   let signals = [], sessionTradesAll = [];
   let tickSeq = 0, lastSignalTickIndex = -999, upStreak = 0, downStreak = 0;
@@ -108,7 +110,7 @@
           <button id="tt-clear-logs" style="flex:1;background:#3d1a1a;color:#e04040;font-size:10px;border:1px solid #7a3a10;border-radius:4px;cursor:pointer;">Clear Logs</button>
         </div>
         <div id="tt-config">
-          <div class="tt-config-row"><label>Mode</label><select id="tt-cfg-strategy-mode"><option value="unleashed">🔥 Unleashed High-Activity</option><option value="seqMaster">🧬 Sequence Master</option><option value="trendIgnition">🚀 Trend Ignition</option><option value="reversalIgnition">🔄 Reversal Ignition</option><option value="ignitionSuite">Full Ignition Suite</option><option value="ignition">Ignition</option><option value="structural3">Structural 3</option><option value="structural2">Structural 2</option><option value="structural">Structural</option><option value="hybrid">Hybrid</option><option value="momentum">Momentum</option><option value="reversal">Reversal</option></select></div>
+          <div class="tt-config-row"><label>Mode</label><select id="tt-cfg-strategy-mode"><option value="statisticalDna">🧬 Statistical DNA</option><option value="unleashed">🔥 Unleashed High-Activity</option><option value="seqMaster">🧬 Sequence Master</option><option value="trendIgnition">🚀 Trend Ignition</option><option value="reversalIgnition">🔄 Reversal Ignition</option><option value="ignitionSuite">Full Ignition Suite</option><option value="ignition">Ignition</option><option value="structural3">Structural 3</option><option value="structural2">Structural 2</option><option value="structural">Structural</option><option value="hybrid">Hybrid</option><option value="momentum">Momentum</option><option value="reversal">Reversal</option></select></div>
           <div id="tt-cfg-seq-master-container" style="display:none; flex-direction:column; gap:4px; margin-top:4px;">
             <label style="font-size:10px; color:#7a8499;">DNA JSON Config</label>
             <textarea id="tt-cfg-seq-master-json" placeholder='Paste JSON DNA here...' style="width:100%; height:120px; background:#1e2338; border:1px solid #3a4260; color:#e0e6f0; border-radius:4px; font-size:10px; font-family:monospace; resize:vertical;"></textarea>
@@ -168,6 +170,7 @@
     document.getElementById('tt-cfg-strategy-mode').addEventListener('change', function () {
       cfg.strategyMode = this.value;
       updateSeqMasterUIVisibility();
+      initDnaWorker();
       saveCfg();
     });
     const seqJsonEl = document.getElementById('tt-cfg-seq-master-json');
@@ -495,6 +498,11 @@
         el.style.color = direction === 1 ? '#3ecf60' : (direction === -1 ? '#e04040' : '#fff');
       }
       lastUI.dirStreak = streakStr;
+    }
+
+    if (cfg.strategyMode === 'statisticalDna' && dnaWorker && parsedDnaConfig) {
+      const priceHistory = ticks.map(t => t.price);
+      dnaWorker.postMessage({ type: 'compute', prices: priceHistory, config: parsedDnaConfig });
     }
 
     try { detectSignal(); lastSignalEvalAt = Date.now(); } catch (e) { evalErrorCount++; }
@@ -869,48 +877,60 @@
     else if (mode === 'reversal') res = checkReversal() || checkReversalFlip();
 
     if (res) {
-      const currentTickIndex = tickSeq;
-      if (mode !== 'unleashed') {
-        if (currentTickIndex - lastSignalTickIndex < cfg.postTradeCooldownTicks || Date.now() - lastTradeClosedAt < cfg.postTradeCooldownMs) return null;
-      }
-      if (realExecState !== 'IDLE') return null;
-      lastSignalTickIndex = currentTickIndex;
-      let conf = res.conf;
-      if (mode !== 'unleashed' && !res.triggerDesc?.includes('POWER') && ((res.type === 'BUY' && !buyDigitBias) || (res.type === 'SELL' && !sellDigitBias))) conf -= 10;
-
-      const sig = {
-        type: res.type,
-        price: t0.price,
-        time: t0.epoch,
-        result: 'PENDING',
-        ticksAfter: [],
-        confidence: Math.min(100, conf),
-        strategy: mode,
-        isReal: cfg.realTradeEnabled,
-        triggerDigit: res.triggerDigit || t0.lastDigit,
-        triggerDesc: res.triggerDesc,
-        startTickIndex: res.startTickIndex || tickSeq + 1,
-        signalTime: Date.now(),
-        metrics: {
-          rsi: currentRSI,
-          adx: currentADX,
-          bbw: bbWidth,
-          intensity: t0.intensity,
-          epsilon: t0.deltaChange,
-          accel: t0.accel5 || 0,
-          sLow: sLow,
-          sHigh: sHigh,
-          trend: t0.trendEma,
-          dir: t0.direction,
-          streak: Math.max(t0.upStreak, t0.downStreak),
-          mean: speedMean,
-          std: speedStd
-        }
-      };
-        signals.push(sig); if (signals.length > 50) signals.shift(); recordSessionTrade(sig); updateSignalsUI();
-        if (cfg.realTradeEnabled) { realExecState = 'OPEN_PENDING'; realLockReason = 'EXECUTING'; updateRealUI(); executeRealTrade(res.type); }
+      triggerSignal(res.type, res.conf, res.triggerDesc, res.triggerDigit, res.startTickIndex);
     }
     return null;
+  }
+
+  function triggerSignal(type, conf, triggerDesc, triggerDigit, startTickIndex) {
+    const n = ticks.length; if (n === 0) return;
+    const t0 = ticks[n - 1];
+    const mode = cfg.strategyMode;
+    const currentTickIndex = tickSeq;
+
+    if (mode !== 'unleashed') {
+      if (currentTickIndex - lastSignalTickIndex < cfg.postTradeCooldownTicks || Date.now() - lastTradeClosedAt < cfg.postTradeCooldownMs) return;
+    }
+    if (realExecState !== 'IDLE') return;
+
+    lastSignalTickIndex = currentTickIndex;
+    let finalConf = conf;
+    const buyDigits = [0, 5, 6, 7], sellDigits = [2, 3, 4, 8];
+    const buyDigitBias = buyDigits.includes(t0.lastDigit), sellDigitBias = sellDigits.includes(t0.lastDigit);
+
+    if (mode !== 'unleashed' && mode !== 'statisticalDna' && !triggerDesc?.includes('POWER') && ((type === 'BUY' && !buyDigitBias) || (type === 'SELL' && !sellDigitBias))) finalConf -= 10;
+
+    const sig = {
+      type: type,
+      price: t0.price,
+      time: t0.epoch,
+      result: 'PENDING',
+      ticksAfter: [],
+      confidence: Math.min(100, finalConf),
+      strategy: mode,
+      isReal: cfg.realTradeEnabled,
+      triggerDigit: triggerDigit || t0.lastDigit,
+      triggerDesc: triggerDesc,
+      startTickIndex: startTickIndex || tickSeq + 1,
+      signalTime: Date.now(),
+      metrics: {
+        rsi: t0.rsi,
+        adx: t0.adx,
+        bbw: bbWidth,
+        intensity: t0.intensity,
+        epsilon: t0.deltaChange,
+        accel: t0.accel5 || 0,
+        sLow: sLow,
+        sHigh: sHigh,
+        trend: t0.trendEma,
+        dir: t0.direction,
+        streak: Math.max(t0.upStreak, t0.downStreak),
+        mean: speedMean,
+        std: speedStd
+      }
+    };
+    signals.push(sig); if (signals.length > 50) signals.shift(); recordSessionTrade(sig); updateSignalsUI();
+    if (cfg.realTradeEnabled) { realExecState = 'OPEN_PENDING'; realLockReason = 'EXECUTING'; updateRealUI(); executeRealTrade(type); }
   }
 
   // ── Infrastructure ────────────────────────────────────────────────────────
@@ -979,7 +999,11 @@
   function loadCfg() { const stored = safeStorage('get', 'tt-cfg'); return Object.assign({ strategyMode: 'hybrid', epsilon: 0.1, maxEpsilon: undefined, epsBuyMin: undefined, epsBuyMax: undefined, epsSellMin: undefined, epsSellMax: undefined, minIntensity: undefined, maxIntensity: undefined, minStreak: undefined, maxStreak: 4, accelBuyMin: undefined, accelBuyMax: undefined, accelSellMin: undefined, accelSellMax: undefined, realTradeEnabled: false, realTimeoutMs: 40000, realCooldownMs: 5000, postTradeCooldownTicks: 5, postTradeCooldownMs: 5000, debugSignals: true, adxMin: undefined, adxMax: undefined, adxPeriod: 14, rsiPeriod: 14, rsiBuyMin: undefined, rsiBuyMax: undefined, rsiSellMin: undefined, rsiSellMax: undefined, trendEmaPeriod: 10, minBBWidth: undefined, maxBBWidth: undefined, scoreThreshold: undefined, seqMasterConfig: '' }, stored || {}); }
   function updateSeqMasterUIVisibility() {
     const container = document.getElementById('tt-cfg-seq-master-container');
-    if (container) container.style.display = (cfg.strategyMode === 'seqMaster' ? 'flex' : 'none');
+    if (container) {
+      container.style.display = (['seqMaster', 'statisticalDna'].includes(cfg.strategyMode) ? 'flex' : 'none');
+      const label = container.querySelector('label');
+      if (label) label.textContent = cfg.strategyMode === 'statisticalDna' ? 'Statistical DNA JSON' : 'DNA JSON Config';
+    }
   }
 
   function validateSeqMasterJSON(raw) {
@@ -988,14 +1012,53 @@
     if (!raw.trim()) {
       el.style.borderColor = '#3a4260';
       parsedSeqMasterConfig = null;
+      parsedDnaConfig = null;
       return;
     }
     try {
-      parsedSeqMasterConfig = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (cfg.strategyMode === 'statisticalDna') {
+        parsedDnaConfig = parsed;
+        parsedSeqMasterConfig = null;
+      } else {
+        parsedSeqMasterConfig = parsed;
+        parsedDnaConfig = null;
+      }
       el.style.borderColor = '#3ecf60';
     } catch (e) {
       el.style.borderColor = '#e04040';
       parsedSeqMasterConfig = null;
+      parsedDnaConfig = null;
+    }
+  }
+
+  function initDnaWorker() {
+    if (cfg.strategyMode !== 'statisticalDna') {
+      if (dnaWorker) {
+        dnaWorker.terminate();
+        dnaWorker = null;
+      }
+      return;
+    }
+    if (dnaWorker) return;
+    try {
+      const workerUrl = chrome.runtime.getURL('dnaWorker.js');
+      dnaWorker = new Worker(workerUrl);
+      dnaWorker.onmessage = function(e) {
+        if (e.data.type === 'signal') {
+          handleDnaSignal(e.data.data);
+        }
+      };
+    } catch (e) {
+      console.error("Failed to init DNA worker", e);
+    }
+  }
+
+  function handleDnaSignal(data) {
+    if (data.status === 'SIGNAL') {
+      triggerSignal(data.action, 100, `DNA:${data.action} (${(data.similarity*100).toFixed(1)}%)`);
+    } else if (cfg.debugSignals && tickSeq % 10 === 0) {
+      console.log("[DNA Worker]", data);
     }
   }
 
@@ -1234,6 +1297,6 @@
     }
     return false;
   }
-  function init() { if (document.getElementById('tt-overlay')) return; cfg = loadCfg(); buildOverlay(); connect(); startWatchdog(); setupFlyoutObserver(); window._tt_cfg = cfg; window._tt_detect = detectSignal; }
+  function init() { if (document.getElementById('tt-overlay')) return; cfg = loadCfg(); buildOverlay(); initDnaWorker(); connect(); startWatchdog(); setupFlyoutObserver(); window._tt_cfg = cfg; window._tt_detect = detectSignal; }
   if (document.body) init(); else document.addEventListener('DOMContentLoaded', init);
 })();
