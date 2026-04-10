@@ -945,8 +945,8 @@
       startTickIndex: startTickIndex || tickSeq + 1,
       signalTime: Date.now(),
       metrics: {
-        rsi: t0.rsi,
-        adx: t0.adx,
+        rsi: t0.rsi || 0,
+        adx: t0.adx || 0,
         bbw: bbWidth,
         intensity: t0.intensity,
         epsilon: t0.deltaChange,
@@ -1063,7 +1063,7 @@
     }
   }
 
-  function initDnaWorker() {
+  async function initDnaWorker() {
     if (cfg.strategyMode !== 'statisticalDna') {
       if (dnaWorker) {
         dnaWorker.terminate();
@@ -1074,7 +1074,12 @@
     if (dnaWorker) return;
     try {
       const workerUrl = chrome.runtime.getURL('dnaWorker.js');
-      dnaWorker = new Worker(workerUrl);
+      const response = await fetch(workerUrl);
+      const script = await response.text();
+      const blob = new Blob([script], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+
+      dnaWorker = new Worker(blobUrl);
       dnaWorker.onmessage = function(e) {
         if (e.data.type === 'signal') {
           handleDnaSignal(e.data.data);
@@ -1082,13 +1087,15 @@
       };
     } catch (e) {
       console.error("Failed to init DNA worker", e);
+      showAlert('DNA ENGINE ERROR: Check Console');
     }
   }
 
   function handleDnaSignal(data) {
     updateDnaUI(data);
     if (data.status === 'SIGNAL') {
-      triggerSignal(data.action, 100, `DNA:${data.action} (${(data.similarity*100).toFixed(1)}%)`);
+      const type = data.action === 'CALL' ? 'BUY' : (data.action === 'PUT' ? 'SELL' : data.action);
+      triggerSignal(type, 100, `DNA:${data.action} (${(data.similarity*100).toFixed(1)}%)`);
     } else if (cfg.debugSignals && tickSeq % 10 === 0) {
       console.log("[DNA Worker]", data);
     }
