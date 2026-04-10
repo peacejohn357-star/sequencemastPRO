@@ -98,6 +98,37 @@
         <div class="tt-row"><span class="tt-label" id="tt-score-label">Live Score</span><span class="tt-val" id="tt-live-score">B: 0 / S: 0</span></div>
         <div class="tt-row"><span class="tt-label">Session W/L</span><span class="tt-val"><span id="tt-wins">0</span> / <span id="tt-losses">0</span></span></div>
         <div id="tt-signals-list"></div>
+        <div id="tt-dna-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px;">
+          <div style="font-size:10px; color:#7a8499; margin-bottom:4px; display:flex; justify-content:space-between;">
+            <span>DNA MATCH METER</span>
+            <span id="tt-dna-match-label">0.0%</span>
+          </div>
+          <div style="height:6px; background:#1e2338; border-radius:3px; overflow:hidden; margin-bottom:8px;">
+            <div id="tt-dna-match-bar" style="width:0%; height:100%; background:#e04040; transition:width 0.2s, background 0.2s;"></div>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:4px; text-align:center; font-size:10px; margin-bottom:8px;">
+            <div class="tt-dna-metric">
+              <div style="color:#7a8499;">RSI Δ</div>
+              <div id="tt-dna-rsi-val">0.00</div>
+              <div id="tt-dna-rsi-target" style="font-size:8px; opacity:0.6;">-</div>
+            </div>
+            <div class="tt-dna-metric">
+              <div style="color:#7a8499;">BBW Δ</div>
+              <div id="tt-dna-bbw-val">0.000</div>
+              <div id="tt-dna-bbw-target" style="font-size:8px; opacity:0.6;">-</div>
+            </div>
+            <div class="tt-dna-metric">
+              <div style="color:#7a8499;">STR Δ</div>
+              <div id="tt-dna-str-val">0.000</div>
+              <div id="tt-dna-str-target" style="font-size:8px; opacity:0.6;">-</div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div id="tt-dna-entropy-badge" style="font-size:9px; padding:2px 4px; border-radius:2px; background:#3d1a1a; color:#e04040;">ENTROPY: 0.00</div>
+            <div id="tt-dna-vgate" style="font-size:14px; color:#e04040;" title="Expansion Gate (BBW Delta > 0)">⧓</div>
+            <div id="tt-dna-regime" style="font-size:9px; padding:2px 4px; border-radius:2px; background:#1e2338; color:#7ec8e3;">REGIME: D</div>
+          </div>
+        </div>
         <div class="tt-config-section-label">Real Execution</div>
         <div id="tt-real-panel">
           <div class="tt-row"><span class="tt-label">Exec State</span><span class="tt-val" id="tt-real-state">IDLE</span></div>
@@ -1055,10 +1086,91 @@
   }
 
   function handleDnaSignal(data) {
+    updateDnaUI(data);
     if (data.status === 'SIGNAL') {
       triggerSignal(data.action, 100, `DNA:${data.action} (${(data.similarity*100).toFixed(1)}%)`);
     } else if (cfg.debugSignals && tickSeq % 10 === 0) {
       console.log("[DNA Worker]", data);
+    }
+  }
+
+  function updateDnaUI(data) {
+    const diag = document.getElementById('tt-dna-diag');
+    const signals = document.getElementById('tt-signals-list');
+    if (cfg.strategyMode === 'statisticalDna') {
+      if (diag) diag.style.display = 'block';
+      if (signals) signals.style.display = 'none';
+    } else {
+      if (diag) diag.style.display = 'none';
+      if (signals) signals.style.display = 'flex';
+      return;
+    }
+
+    if (!data || !data.metrics) return;
+    const m = data.metrics;
+    const stats = m.stats;
+
+    // 1. Update Match Meter
+    const sim = data.similarity || data.maxSimilarity || 0;
+    const matchPct = (sim * 100).toFixed(1);
+    const bar = document.getElementById('tt-dna-match-bar');
+    const label = document.getElementById('tt-dna-match-label');
+    if (bar) {
+      bar.style.width = `${matchPct}%`;
+      bar.style.background = sim >= 0.85 ? '#3ecf60' : (sim >= 0.70 ? '#f0c040' : '#e04040');
+    }
+    if (label) {
+      label.textContent = `${matchPct}%`;
+      label.style.color = sim >= 0.85 ? '#3ecf60' : (sim >= 0.70 ? '#f0c040' : '#e04040');
+      if (sim >= 0.85) label.textContent += " - LATCHED";
+    }
+
+    // 2. Update Trinity Deltas with color logic
+    const profiles = parsedDnaConfig?.dnaProfiles || {};
+    // Determine which profile to compare against for color-coding (best match or current direction)
+    const activeAction = data.action || (stats.rsiDelta > 0 ? 'CALL' : 'PUT');
+    const targetMeans = profiles[activeAction]?.means || {};
+
+    updateMetric('rsi', stats.rsiDelta, targetMeans.rsiDelta);
+    updateMetric('bbw', stats.bbwDelta, targetMeans.bbwDelta, 3);
+    updateMetric('str', stats.strDelta, targetMeans.strDelta, 3);
+
+    function updateMetric(id, current, target, dp = 2) {
+      const valEl = document.getElementById(`tt-dna-${id}-val`);
+      const targetEl = document.getElementById(`tt-dna-${id}-target`);
+      if (valEl) {
+        valEl.textContent = current.toFixed(dp);
+        if (target !== undefined) {
+          // Cyan if moving toward target (current and target have same sign), Red if away
+          const toward = (Math.sign(current) === Math.sign(target)) && (Math.abs(current) > 0);
+          valEl.className = toward ? 'tt-color-toward' : 'tt-color-away';
+        } else {
+          valEl.className = 'tt-color-neutral';
+        }
+      }
+      if (targetEl) targetEl.textContent = target !== undefined ? `Target: ${target.toFixed(dp)}` : '-';
+    }
+
+    // 3. Environmental Badges
+    const entropyEl = document.getElementById('tt-dna-entropy-badge');
+    if (entropyEl) {
+      entropyEl.textContent = `ENTROPY: ${m.entropy.toFixed(2)}`;
+      const ok = m.entropy >= (parsedDnaConfig?.minEntropy || 2.8);
+      entropyEl.style.background = ok ? '#1a3d28' : '#3d1a1a';
+      entropyEl.style.color = ok ? '#3ecf60' : '#e04040';
+      if (!ok) entropyEl.textContent += " (LOW)";
+    }
+
+    const vgateEl = document.getElementById('tt-dna-vgate');
+    if (vgateEl) {
+      const ok = m.bbwDelta > 0;
+      vgateEl.style.color = ok ? '#3ecf60' : '#e04040';
+    }
+
+    const regimeEl = document.getElementById('tt-dna-regime');
+    if (regimeEl) {
+      regimeEl.textContent = `REGIME: ${m.regime}`;
+      regimeEl.style.color = m.regime === 'D' ? '#3ecf60' : '#f0c040';
     }
   }
 

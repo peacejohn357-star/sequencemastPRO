@@ -357,3 +357,20 @@ input:checked + .tt-slider:before {
   text-align: center;
 }
 #tt-alert.tt-visible { display: block; }
+
+/* ── DNA Diagnostic Panel ── */
+.tt-dna-metric {
+  padding: 4px;
+  background: #1e2338;
+  border-radius: 4px;
+  border: 1px solid #2e3650;
+}
+
+#tt-dna-diag .tt-dna-metric div:nth-child(2) {
+  font-weight: 700;
+  margin: 2px 0;
+}
+
+.tt-color-away { color: #e04040 !important; }
+.tt-color-toward { color: #00ffff !important; }
+.tt-color-neutral { color: #7a8499 !important; }
