@@ -2,6 +2,8 @@
  * DNA Worker for Statistical DNA Strategy
  */
 
+let lastDiscoveredStreakStart = -1;
+
 self.onmessage = function(e) {
     const { type, prices, config } = e.data;
 
@@ -256,55 +258,61 @@ function calcStrain(prices, ema50Arr, stdDev20Arr) {
 }
 
 function discoverPatterns(prices, rsiArr, bbwArr, strainArr, currentRegime) {
-    if (prices.length < 50) return;
+    const n = prices.length;
+    if (n < 50) return;
 
-    // Look back for a streak of 5+ that just ended or is ongoing
-    let currentStreak = 1;
-    let streakType = null;
-    let streakEndIdx = prices.length - 1;
-
-    for (let i = prices.length - 1; i > 0; i--) {
+    // Pre-calculate directions to match content.js logic (ignore flat ticks, use previous)
+    const dirs = new Array(n);
+    let lastD = "U";
+    for (let i = 1; i < n; i++) {
         const diff = prices[i] - prices[i-1];
-        if (diff === 0) continue; // Skip flat ticks for streak detection
-        const type = diff > 0 ? "U" : "D";
-        if (streakType === null) streakType = type;
+        if (diff > 0) lastD = "U";
+        else if (diff < 0) lastD = "D";
+        dirs[i] = lastD;
+    }
 
-        if (type === streakType) {
-            currentStreak++;
+    let streakLen = 0;
+    let streakType = dirs[n - 1];
+    let streakStartIdx = n - 1;
+
+    for (let i = n - 1; i >= 1; i--) {
+        if (dirs[i] === streakType) {
+            streakLen++;
+            streakStartIdx = i;
         } else {
             break;
         }
     }
 
-    if (currentStreak >= 5) {
-        const streakStartIdx = streakEndIdx - currentStreak + 1;
-        const presequenceBufferIdx = streakStartIdx - 6;
+    // Register when streak is 5 or more, but only once per unique streak start
+    if (streakLen >= 5 && lastDiscoveredStreakStart !== streakStartIdx) {
+        const presequenceEndIdx = streakStartIdx - 1;
+        const presequenceStartIdx = presequenceEndIdx - 4;
 
-        if (presequenceBufferIdx >= 0) {
-            const hitIdx = streakStartIdx - 1;
-            const buffer = prices.slice(presequenceBufferIdx, streakStartIdx);
+        if (presequenceStartIdx >= 1) {
             let sequenceStr = "";
-            let lastDir = "U";
-            for(let i = 1; i < buffer.length; i++) {
-                if (buffer[i] > buffer[i-1]) lastDir = "U";
-                else if (buffer[i] < buffer[i-1]) lastDir = "D";
-                sequenceStr += lastDir;
+            for (let i = presequenceStartIdx; i <= presequenceEndIdx; i++) {
+                sequenceStr += dirs[i];
             }
+
+            // Capture regime at the exact "Hit" point (end of presequence)
+            const hitRegime = detectCurrentRegime(prices, rsiArr, bbwArr, strainArr, presequenceEndIdx);
 
             self.postMessage({
                 type: 'NEW_SIGNAL',
                 data: {
                     sequence: sequenceStr,
                     action: streakType === "U" ? "CALL" : "PUT",
-                    regime: currentRegime,
+                    regime: hitRegime,
                     hitState: {
-                        rsi: rsiArr[streakStartIdx - 1],
-                        bbw: bbwArr[streakStartIdx - 1],
-                        str: strainArr[streakStartIdx - 1]
+                        rsi: rsiArr[presequenceEndIdx],
+                        bbw: bbwArr[presequenceEndIdx],
+                        str: strainArr[presequenceEndIdx]
                     },
-                    ext: currentStreak + "t"
+                    ext: streakLen + "t"
                 }
             });
+            lastDiscoveredStreakStart = streakStartIdx;
         }
     }
 }
