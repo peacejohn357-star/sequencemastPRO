@@ -34,25 +34,27 @@ self.onmessage = function(e) {
         const regime = detectCurrentRegime(prices, rsiArr, bbwArr, strainArr, n - 1);
         const entropy = calcShannonEntropy(prices.slice(-100));
 
+        const metricsData = {
+            regime,
+            entropy,
+            bbwDelta,
+            currentBBW,
+            stats: {
+                rsi: currentRSI,
+                rsiDelta: rsiDelta,
+                bbw: currentBBW,
+                bbwDelta: bbwDelta,
+                str: currentStr,
+                strDelta: strDelta
+            }
+        };
+
         self.postMessage({
             type: 'metrics',
-            data: {
-                regime,
-                entropy,
-                bbwDelta,
-                currentBBW,
-                stats: {
-                    rsi: currentRSI,
-                    rsiDelta: rsiDelta,
-                    bbw: currentBBW,
-                    bbwDelta: bbwDelta,
-                    str: currentStr,
-                    strDelta: strDelta
-                }
-            }
+            data: metricsData
         });
 
-        discoverPatterns(prices, rsiArr, bbwArr, strainArr);
+        discoverPatterns(prices, rsiArr, bbwArr, strainArr, regime);
     }
 };
 
@@ -253,7 +255,7 @@ function calcStrain(prices, ema50Arr, stdDev20Arr) {
     });
 }
 
-function discoverPatterns(prices, rsiArr, bbwArr, strainArr) {
+function discoverPatterns(prices, rsiArr, bbwArr, strainArr, currentRegime) {
     if (prices.length < 50) return;
 
     // Look back for a streak of 5+ that just ended or is ongoing
@@ -289,19 +291,12 @@ function discoverPatterns(prices, rsiArr, bbwArr, strainArr) {
                 sequenceStr += lastDir;
             }
 
-            const hitRegime = detectCurrentRegime(prices, rsiArr, bbwArr, strainArr, hitIdx);
-
             self.postMessage({
                 type: 'NEW_SIGNAL',
                 data: {
                     sequence: sequenceStr,
                     action: streakType === "U" ? "CALL" : "PUT",
-                    regime: hitRegime,
-                    startState: {
-                        rsi: rsiArr[presequenceBufferIdx],
-                        bbw: bbwArr[presequenceBufferIdx],
-                        str: strainArr[presequenceBufferIdx]
-                    },
+                    regime: currentRegime,
                     hitState: {
                         rsi: rsiArr[streakStartIdx - 1],
                         bbw: bbwArr[streakStartIdx - 1],

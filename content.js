@@ -1186,30 +1186,46 @@
       timestamp: Date.now(),
       sequence: pattern.sequence,
       action: pattern.action,
-      startState: pattern.startState,
-      hitState: pattern.hitState
+      hitState: pattern.hitState,
+      regime: pattern.regime
     });
   }
 
-  function updateDiscoveryUI(signal, isFail = false, actualMetrics = null) {
+  function updateDiscoveryUI(s, isFail = false, actualMetrics = null) {
     const container = isFail ? document.getElementById('tt-fail-exec-list') : document.getElementById('tt-discovery-feed');
     if (!container) return;
     const el = document.createElement('div');
-    el.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-    el.style.padding = '2px 4px';
+    el.className = "tt-discovery-row";
+    el.style.borderBottom = '1px solid #333';
+    el.style.padding = '5px';
+    el.style.fontSize = '11px';
+    el.style.background = isFail ? 'rgba(224, 64, 64, 0.1)' : 'transparent';
+
+    const displayRegime = s.regime ? s.regime : "Unknown Regime";
 
     if (isFail && actualMetrics) {
-      const rsiExp = signal.hitState.rsi;
-      const rsiAct = actualMetrics.rsi;
-      const bbwExp = signal.hitState.bbw;
-      const bbwAct = actualMetrics.bbw;
-      el.innerHTML = `<span style="color:#e04040">FAILED: [${signal.sequence}]</span><br/>
-                      <span style="font-size:9px; color:#7a8499">
-                        RSI Exp: ${rsiExp.toFixed(1)} | Act: ${rsiAct.toFixed(1)} (Δ ${(rsiAct-rsiExp).toFixed(1)})<br/>
-                        BBW Exp: ${bbwExp.toFixed(3)} | Act: ${bbwAct.toFixed(3)}
-                      </span>`;
+        el.innerHTML = `
+            <div style="display:flex; justify-content:space-between; margin-bottom: 4px;">
+                <b style="color:#e04040;">FAILED: ${s.sequence} ${s.action}</b>
+                <span style="color:#888;">${displayRegime}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; color:#7a8499; font-size:9px;">
+                <div>RSI Act: ${actualMetrics.rsi.toFixed(1)} (Exp: ${s.hitState.rsi.toFixed(1)})</div>
+                <div>BBW Act: ${actualMetrics.bbw.toFixed(4)}</div>
+            </div>
+        `;
     } else {
-      el.innerText = `${signal.sequence} | ${signal.action} | RSI: ${signal.startState.rsi.toFixed(1)}->${signal.hitState.rsi.toFixed(1)}`;
+        el.innerHTML = `
+            <div style="display:flex; justify-content:space-between; margin-bottom: 4px;">
+                <b style="color:#00ffff;">${s.sequence} ${s.action}</b>
+                <span style="color:#888;">ext: ${s.ext || '?'} | ${displayRegime}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; color:#fff;">
+                <div>RSI: <b>${s.hitState.rsi.toFixed(1)}</b></div>
+                <div>BBW: <b>${s.hitState.bbw.toFixed(4)}</b></div>
+                <div>STR: <b>${s.hitState.str.toFixed(2)}</b></div>
+            </div>
+        `;
     }
 
     container.prepend(el);
