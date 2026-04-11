@@ -100,11 +100,14 @@
         <div class="tt-row"><span class="tt-label" id="tt-score-label">Live Score</span><span class="tt-val" id="tt-live-score">B: 0 / S: 0</span></div>
         <div class="tt-row"><span class="tt-label">Session W/L</span><span class="tt-val"><span id="tt-wins">0</span> / <span id="tt-losses">0</span></span></div>
         <div id="tt-signals-list"></div>
-        <div id="tt-discovery-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px; max-height:200px; overflow:hidden; flex-direction:column; gap:4px;">
-          <div style="font-size:10px; color:#7a8499; border-bottom:1px solid #3a4260; padding-bottom:2px;">LIVE DISCOVERY FEED</div>
-          <div id="tt-discovery-feed" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#3ecf60; max-height:80px;"></div>
+        <div id="tt-discovery-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px; max-height:400px; overflow:hidden; flex-direction:column; gap:4px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #3a4260; padding-bottom:2px;">
+            <div style="font-size:10px; color:#7a8499;">LIVE DISCOVERY FEED <span id="tt-armed-count" style="color:#7ec8e3; margin-left:4px;">(Armed: 0)</span></div>
+            <button id="tt-flush-ram" style="font-size:9px; background:#3d1a1a; color:#e04040; border:1px solid #7a3a10; border-radius:3px; cursor:pointer; padding:2px 6px; font-weight:bold; text-transform:uppercase;">Flush RAM</button>
+          </div>
+          <div id="tt-discovery-feed" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#3ecf60; max-height:150px; scrollbar-width:thin;"></div>
           <div style="font-size:10px; color:#e04040; border-bottom:1px solid #3d1a1a; padding-bottom:2px; margin-top:4px;">EXECUTION FAILURES (PURGED)</div>
-          <div id="tt-fail-exec-list" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#e04040; max-height:60px;"></div>
+          <div id="tt-fail-exec-list" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#e04040; max-height:100px; scrollbar-width:thin;"></div>
         </div>
         <div id="tt-dna-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px;">
           <div style="font-size:10px; color:#7a8499; margin-bottom:4px; display:flex; justify-content:space-between;">
@@ -211,6 +214,12 @@
       updateSeqMasterUIVisibility();
       initDnaWorker();
       saveCfg();
+      // Auto-Focus/Expand Diagnostic Panels
+      if (cfg.strategyMode === 'discoveryEvolution' || cfg.strategyMode === 'statisticalDna') {
+          const config = document.getElementById('tt-config');
+          if (config && config.classList.contains('tt-open')) config.classList.remove('tt-open');
+          updateDnaUI({}); // Force panel layout update
+      }
     });
     const seqJsonEl = document.getElementById('tt-cfg-seq-master-json');
     seqJsonEl.addEventListener('input', function() {
@@ -246,6 +255,7 @@
     document.getElementById('tt-cfg-real-enabled').addEventListener('change', function () { cfg.realTradeEnabled = this.checked; saveCfg(); });
     document.getElementById('tt-real-export').addEventListener('click', exportRealCSV);
     document.getElementById('tt-real-reset').addEventListener('click', () => { if (confirm('Reset real-trade engine to IDLE and clear lock?')) { realExecState = 'IDLE'; realLockReason = ''; realOpenCount = 0; clearTimeout(realExecTimer); updateRealUI(); } });
+    document.getElementById('tt-flush-ram').addEventListener('click', () => { if (confirm('Flush RAM and Clear Discovery Pool?')) { activeTradePool.clear(); document.getElementById('tt-discovery-feed').innerHTML = ''; document.getElementById('tt-fail-exec-list').innerHTML = ''; document.getElementById('tt-armed-count').textContent = '(Armed: 0)'; showAlert('RAM Flushed'); } });
     document.getElementById('tt-clear-logs').addEventListener('click', () => { if (confirm('Clear all session signal and tick logs?')) { sessionTradesAll = []; signals = []; realTrades = []; updateSignalsUI(); showAlert('Logs cleared'); } });
     document.getElementById('tt-export').addEventListener('click', exportCSV);
     applyConfigToUI();
@@ -1151,15 +1161,33 @@
     });
   }
 
-  function updateDiscoveryUI(signal, isFail = false) {
+  function updateDiscoveryUI(signal, isFail = false, actualMetrics = null) {
     const container = isFail ? document.getElementById('tt-fail-exec-list') : document.getElementById('tt-discovery-feed');
     if (!container) return;
     const el = document.createElement('div');
     el.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-    el.style.padding = '2px 0';
-    el.innerText = `${signal.sequence} | ${signal.action} | RSI: ${signal.startState.rsi.toFixed(1)}->${signal.hitState.rsi.toFixed(1)}`;
+    el.style.padding = '2px 4px';
+
+    if (isFail && actualMetrics) {
+      const rsiExp = signal.hitState.rsi;
+      const rsiAct = actualMetrics.rsi;
+      const bbwExp = signal.hitState.bbw;
+      const bbwAct = actualMetrics.bbw;
+      el.innerHTML = `<span style="color:#e04040">FAILED: [${signal.sequence}]</span><br/>
+                      <span style="font-size:9px; color:#7a8499">
+                        RSI Exp: ${rsiExp.toFixed(1)} | Act: ${rsiAct.toFixed(1)} (Δ ${(rsiAct-rsiExp).toFixed(1)})<br/>
+                        BBW Exp: ${bbwExp.toFixed(3)} | Act: ${bbwAct.toFixed(3)}
+                      </span>`;
+    } else {
+      el.innerText = `${signal.sequence} | ${signal.action} | RSI: ${signal.startState.rsi.toFixed(1)}->${signal.hitState.rsi.toFixed(1)}`;
+    }
+
     container.prepend(el);
-    if (container.children.length > 15) container.lastChild.remove();
+    // Large limit for "unlimited" feel without crashing DOM
+    if (container.children.length > 1000) container.lastChild.remove();
+
+    const countEl = document.getElementById('tt-armed-count');
+    if (countEl) countEl.textContent = `(Armed: ${activeTradePool.size})`;
   }
 
   function handleDnaSignal(data) {
@@ -1460,7 +1488,7 @@
         if (res.result === 'LOSS') {
           activeTradePool.delete(key);
           logDiscoveryFailure(pattern);
-          updateDiscoveryUI(pattern, true);
+          updateDiscoveryUI(pattern, true, simTrade.metrics);
         }
       }
     }

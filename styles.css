@@ -374,3 +374,18 @@ input:checked + .tt-slider:before {
 .tt-color-away { color: #e04040 !important; }
 .tt-color-toward { color: #00ffff !important; }
 .tt-color-neutral { color: #7a8499 !important; }
+
+/* Discovery Feed Scrollbar Fix */
+#tt-discovery-feed::-webkit-scrollbar,
+#tt-fail-exec-list::-webkit-scrollbar {
+  width: 4px;
+}
+#tt-discovery-feed::-webkit-scrollbar-thumb,
+#tt-fail-exec-list::-webkit-scrollbar-thumb {
+  background: #3a4260;
+  border-radius: 2px;
+}
+#tt-discovery-feed::-webkit-scrollbar-track,
+#tt-fail-exec-list::-webkit-scrollbar-track {
+  background: transparent;
+}
