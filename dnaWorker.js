@@ -23,6 +23,35 @@ self.onmessage = function(e) {
         const stdDev20Arr = calcStdDev(prices, 20);
         const strainArr = calcStrain(prices, ema50Arr, stdDev20Arr);
 
+        // Continuous metric reporting
+        const n = prices.length;
+        const currentRSI = rsiArr[n - 1];
+        const currentBBW = bbwArr[n - 1];
+        const currentStr = strainArr[n - 1];
+        const rsiDelta = n >= 5 ? currentRSI - rsiArr[n - 5] : 0;
+        const bbwDelta = n >= 5 ? currentBBW - bbwArr[n - 5] : 0;
+        const strDelta = n >= 5 ? currentStr - strainArr[n - 5] : 0;
+        const regime = detectCurrentRegime(prices, rsiArr, bbwArr, strainArr, n - 1);
+        const entropy = calcShannonEntropy(prices.slice(-100));
+
+        self.postMessage({
+            type: 'metrics',
+            data: {
+                regime,
+                entropy,
+                bbwDelta,
+                currentBBW,
+                stats: {
+                    rsi: currentRSI,
+                    rsiDelta: rsiDelta,
+                    bbw: currentBBW,
+                    bbwDelta: bbwDelta,
+                    str: currentStr,
+                    strDelta: strDelta
+                }
+            }
+        });
+
         discoverPatterns(prices, rsiArr, bbwArr, strainArr);
     }
 };
@@ -247,31 +276,38 @@ function discoverPatterns(prices, rsiArr, bbwArr, strainArr) {
 
     if (currentStreak >= 5) {
         const streakStartIdx = streakEndIdx - currentStreak + 1;
-        const presequenceStartIdx = streakStartIdx - 5;
+        const presequenceBufferIdx = streakStartIdx - 6;
 
-        if (presequenceStartIdx >= 0) {
-            const preSequenceTicks = prices.slice(presequenceStartIdx, streakStartIdx);
-            const sequenceStr = preSequenceTicks.map((p, i) => {
-                if (i === 0) return "";
-                const d = p - preSequenceTicks[i-1];
-                return d > 0 ? "U" : (d < 0 ? "D" : "Z");
-            }).join("");
+        if (presequenceBufferIdx >= 0) {
+            const hitIdx = streakStartIdx - 1;
+            const buffer = prices.slice(presequenceBufferIdx, streakStartIdx);
+            let sequenceStr = "";
+            let lastDir = "U";
+            for(let i = 1; i < buffer.length; i++) {
+                if (buffer[i] > buffer[i-1]) lastDir = "U";
+                else if (buffer[i] < buffer[i-1]) lastDir = "D";
+                sequenceStr += lastDir;
+            }
+
+            const hitRegime = detectCurrentRegime(prices, rsiArr, bbwArr, strainArr, hitIdx);
 
             self.postMessage({
                 type: 'NEW_SIGNAL',
                 data: {
                     sequence: sequenceStr,
                     action: streakType === "U" ? "CALL" : "PUT",
+                    regime: hitRegime,
                     startState: {
-                        rsi: rsiArr[presequenceStartIdx],
-                        bbw: bbwArr[presequenceStartIdx],
-                        strain: strainArr[presequenceStartIdx]
+                        rsi: rsiArr[presequenceBufferIdx],
+                        bbw: bbwArr[presequenceBufferIdx],
+                        str: strainArr[presequenceBufferIdx]
                     },
                     hitState: {
                         rsi: rsiArr[streakStartIdx - 1],
                         bbw: bbwArr[streakStartIdx - 1],
-                        strain: strainArr[streakStartIdx - 1]
-                    }
+                        str: strainArr[streakStartIdx - 1]
+                    },
+                    ext: currentStreak + "t"
                 }
             });
         }

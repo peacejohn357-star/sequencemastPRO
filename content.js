@@ -69,6 +69,8 @@
   let activeTradePool = new Map();
   let discoveryDb = null;
   let sHigh = 0, sLow = 0, speedMean = 0, speedStd = 0, bbWidth = 0, prevBbWidth = 0;
+  let currentStrain = 0, currentRegime = 'D', currentEntropy = 0;
+  let isArmed = false, armedSignal = null;
   let signals = [], sessionTradesAll = [];
   let tickSeq = 0, lastSignalTickIndex = -999, upStreak = 0, downStreak = 0;
   let lastTickProcessedAt = 0, lastSignalEvalAt = 0, watchdogInterval = null, evalErrorCount = 0;
@@ -97,7 +99,7 @@
         <div class="tt-row"><span class="tt-label">ADX / BB_W</span><span class="tt-val" id="tt-adx-stats">0 / 0.00</span></div>
         <div class="tt-row"><span class="tt-label">RSI / Trend</span><span class="tt-val" id="tt-rsi-stats">0 / 0.00</span></div>
         <div class="tt-row"><span class="tt-label">Int/Eps/Accel</span><span class="tt-val" id="tt-unleashed-stats">0 / 0 / 0.00000</span></div>
-        <div class="tt-row"><span class="tt-label" id="tt-score-label">Live Score</span><span class="tt-val" id="tt-live-score">B: 0 / S: 0</span></div>
+        <div class="tt-row" id="tt-regime-row" style="justify-content:center; font-weight:bold; color:#7ec8e3;"><span id="tt-regime-display">D · NOISE · BBW: 0.00</span></div>
         <div class="tt-row"><span class="tt-label">Session W/L</span><span class="tt-val"><span id="tt-wins">0</span> / <span id="tt-losses">0</span></span></div>
         <div id="tt-signals-list"></div>
         <div id="tt-discovery-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px; max-height:400px; overflow:hidden; flex-direction:column; gap:4px;">
@@ -405,25 +407,31 @@
       sHigh = Math.max(p70, speedMean + speedStd); sLow = Math.min(p30, Math.max(0, speedMean - speedStd));
     }
 
-    if (cfg.strategyMode === 'unleashed' || cfg.strategyMode === 'seqMaster' || tickSeq % 5 === 0) {
-      updateStatsUI();
-      const elLabel = document.getElementById('tt-score-label');
-      if (cfg.strategyMode === 'unleashed') {
-        if (elLabel && elLabel.textContent !== 'Live Score') elLabel.textContent = 'Live Score';
+    updateStatsUI();
+    const regimeRow = document.getElementById('tt-regime-row');
+    const regimeDisplay = document.getElementById('tt-regime-display');
+
+    if (cfg.strategyMode === 'discoveryEvolution' || cfg.strategyMode === 'statisticalDna') {
+      if (regimeRow) regimeRow.style.display = 'flex';
+      if (regimeDisplay) {
+        const regimeName = currentRegime === 'A' ? 'A · CONSOLIDATION' : (currentRegime === 'B' ? 'B · TRENDING' : (currentRegime === 'C' ? 'C · VOLATILITY' : 'D · NOISE'));
+        regimeDisplay.textContent = `${regimeName} · BBW: ${bbWidth.toFixed(2)}`;
+      }
+    } else if (cfg.strategyMode === 'unleashed') {
+      if (regimeRow) regimeRow.style.display = 'flex';
+      if (regimeDisplay) {
         const buyScore = calculateScore('BUY');
         const sellScore = calculateScore('SELL');
-        const elScore = document.getElementById('tt-live-score');
-        if (elScore) elScore.textContent = `B: ${buyScore} / S: ${sellScore}`;
-      } else if (cfg.strategyMode === 'seqMaster') {
-        if (elLabel && elLabel.textContent !== 'Sequence') elLabel.textContent = 'Sequence';
-        const elScore = document.getElementById('tt-live-score');
-        if (elScore) {
-          const seqStr = tickDirections.join('');
-          elScore.textContent = seqStr.slice(-10);
-        }
-      } else {
-        if (elLabel && elLabel.textContent !== 'Live Score') elLabel.textContent = 'Live Score';
+        regimeDisplay.textContent = `B: ${buyScore} / S: ${sellScore}`;
       }
+    } else if (cfg.strategyMode === 'seqMaster') {
+      if (regimeRow) regimeRow.style.display = 'flex';
+      if (regimeDisplay) {
+        const seqStr = tickDirections.join('');
+        regimeDisplay.textContent = seqStr.slice(-10);
+      }
+    } else {
+      if (regimeRow) regimeRow.style.display = 'none';
     }
   }
 
@@ -495,7 +503,7 @@
     if (delta > 0) { upStreak++; downStreak = 0; } else if (delta < 0) { downStreak++; upStreak = 0; } else { upStreak = 0; downStreak = 0; }
 
     // Update tick directions
-    const dirChar = delta > 0 ? 'U' : (delta < 0 ? 'D' : 'Z');
+    let dirChar = delta > 0 ? 'U' : (delta < 0 ? 'D' : (tickDirections.length ? tickDirections[tickDirections.length - 1] : 'U'));
     tickDirections.push(dirChar);
     if (tickDirections.length > 20) tickDirections.shift();
 
@@ -552,7 +560,22 @@
     if (['statisticalDna', 'discoveryEvolution'].includes(cfg.strategyMode) && dnaWorker) {
       const priceHistory = ticks.map(t => t.price);
       dnaWorker.postMessage({ type: 'compute', prices: priceHistory, config: parsedDnaConfig });
-      if (cfg.strategyMode === 'discoveryEvolution') checkDiscoveryMatch();
+      if (cfg.strategyMode === 'discoveryEvolution') {
+        // Confirmation Tick Handling
+        if (isArmed && armedSignal) {
+          if (dirChar === (armedSignal.action === 'CALL' ? 'U' : 'D')) {
+            const type = armedSignal.action === 'CALL' ? 'BUY' : 'SELL';
+            triggerSignal(type, 100, `EVO:${armedSignal.sequence}`, null, null, armedSignal);
+            isArmed = false;
+            armedSignal = null;
+          } else {
+            // Since dirChar is never Z now, any direction that is not the target will disarm
+            isArmed = false;
+            armedSignal = null;
+          }
+        }
+        checkDiscoveryMatch();
+      }
     }
 
     try { detectSignal(); lastSignalEvalAt = Date.now(); } catch (e) { evalErrorCount++; }
@@ -794,8 +817,6 @@
       const scoreT = cfg.scoreThreshold;
       const useScore = scoreT !== undefined;
 
-      const elScore = document.getElementById('tt-live-score');
-      if (elScore) elScore.textContent = `B: ${buyScore} / S: ${sellScore}`;
 
       // BUY Logic
       let buyOk = (t0.direction === 1 && t0.price > t0.trendEma);
@@ -933,24 +954,31 @@
   }
 
   function checkDiscoveryMatch() {
-    if (ticks.length < 5) return;
-    const last5 = ticks.slice(-5);
-    const sequenceStr = last5.map((t, i) => {
-      if (i === 0) return "";
-      const d = t.price - last5[i-1].price;
-      return d > 0 ? "U" : (d < 0 ? "D" : "Z");
+    if (ticks.length < 6) return;
+    const last6 = ticks.slice(-6);
+    let lastDirMatch = "U";
+    const sequenceStr = last6.slice(1).map((t, i) => {
+      const d = t.price - last6[i].price;
+      if (d > 0) lastDirMatch = "U";
+      else if (d < 0) lastDirMatch = "D";
+      return lastDirMatch;
     }).join("");
 
-    const currentRSI = last5[4].rsi || 0;
+    const currentRSI = ticks[ticks.length - 1].rsi || 0;
     const currentBBW = bbWidth || 0;
+    const currentStr = currentStrain || 0;
 
     for (const [key, pattern] of activeTradePool.entries()) {
       if (pattern.sequence === sequenceStr) {
-        const rsiMatch = Math.abs(currentRSI - pattern.hitState.rsi) < 0.5;
-        const bbwMatch = Math.abs(currentBBW - pattern.hitState.bbw) < 0.01;
-        if (rsiMatch && bbwMatch) {
-          const type = pattern.action === 'CALL' ? 'BUY' : 'SELL';
-          triggerSignal(type, 100, `EVO:${pattern.sequence}`, null, null, pattern);
+        const rsiMatch = Math.abs(currentRSI - pattern.hitState.rsi) <= 0.2;
+        const bbwMatch = Math.abs(currentBBW - pattern.hitState.bbw) <= 0.0005;
+        const strMatch = Math.abs(currentStr - pattern.hitState.str) <= 0.05;
+        const regimeMatch = currentRegime === pattern.regime;
+
+        if (rsiMatch && bbwMatch && strMatch && regimeMatch) {
+          isArmed = true;
+          armedSignal = pattern;
+          console.log("[EVO] ARMED:", pattern.sequence, pattern.action);
         }
       }
     }
@@ -1130,6 +1158,8 @@
       dnaWorker.onmessage = function(e) {
         if (e.data.type === 'signal') {
           handleDnaSignal(e.data.data);
+        } else if (e.data.type === 'metrics') {
+          handleDnaMetrics(e.data.data);
         } else if (e.data.type === 'NEW_SIGNAL') {
           handleNewDiscoverySignal(e.data.data);
         }
@@ -1190,6 +1220,15 @@
     if (countEl) countEl.textContent = `(Armed: ${activeTradePool.size})`;
   }
 
+  function handleDnaMetrics(data) {
+    if (data) {
+        currentRegime = data.regime || 'D';
+        currentEntropy = data.entropy || 0;
+        currentStrain = data.stats ? data.stats.str : 0;
+    }
+    updateDnaUI({ metrics: data });
+  }
+
   function handleDnaSignal(data) {
     updateDnaUI(data);
     if (data.status === 'SIGNAL') {
@@ -1223,6 +1262,7 @@
     if (!data || !data.metrics) return;
     const m = data.metrics;
     const stats = m.stats;
+    if (!stats) return;
 
     // 1. Update Match Meter
     const sim = data.similarity || data.maxSimilarity || 0;
