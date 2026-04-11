@@ -1171,10 +1171,24 @@
   }
 
   function handleNewDiscoverySignal(data) {
-    const key = `${data.sequence}-${data.action}`;
-    if (!activeTradePool.has(key)) {
-      activeTradePool.set(key, data);
-      updateDiscoveryUI(data);
+    // Check if we have this pattern already but with different coordinates
+    let isDuplicate = false;
+    for (const [key, existing] of activeTradePool.entries()) {
+        if (existing.sequence === data.sequence && existing.action === data.action && existing.regime === data.regime) {
+            const rsiMatch = Math.abs(existing.hitState.rsi - data.hitState.rsi) <= 0.2;
+            const bbwMatch = Math.abs(existing.hitState.bbw - data.hitState.bbw) <= 0.0005;
+            const strMatch = Math.abs(existing.hitState.str - data.hitState.str) <= 0.05;
+            if (rsiMatch && bbwMatch && strMatch) {
+                isDuplicate = true;
+                break;
+            }
+        }
+    }
+
+    if (!isDuplicate) {
+        const uniqueKey = `${data.sequence}-${data.action}-${Date.now()}`;
+        activeTradePool.set(uniqueKey, data);
+        updateDiscoveryUI(data);
     }
   }
 
