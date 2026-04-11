@@ -8,10 +8,22 @@ self.onmessage = function(e) {
     if (type === 'compute') {
         if (!prices || prices.length < 50) return;
 
+        // 1. Existing DNA Logic
         const result = computeDNA(prices, config);
         if (result) {
             self.postMessage({ type: 'signal', data: result });
         }
+
+        // 2. Discovery Evolution Logic
+        const rsiArr = calcRSI(prices, 14);
+        const ema10Arr = calcEMA(prices, 10);
+        const stdDev10Arr = calcStdDev(prices, 10);
+        const bbwArr = calcBBW(ema10Arr, stdDev10Arr);
+        const ema50Arr = calcEMA(prices, 50);
+        const stdDev20Arr = calcStdDev(prices, 20);
+        const strainArr = calcStrain(prices, ema50Arr, stdDev20Arr);
+
+        discoverPatterns(prices, rsiArr, bbwArr, strainArr);
     }
 };
 
@@ -210,4 +222,58 @@ function calcStrain(prices, ema50Arr, stdDev20Arr) {
         const std2 = Math.max(stdDev20Arr[i], 0.0001) * 2;
         return Math.abs(p - ema50Arr[i]) / std2;
     });
+}
+
+function discoverPatterns(prices, rsiArr, bbwArr, strainArr) {
+    if (prices.length < 50) return;
+
+    // Look back for a streak of 5+ that just ended or is ongoing
+    let currentStreak = 1;
+    let streakType = null;
+    let streakEndIdx = prices.length - 1;
+
+    for (let i = prices.length - 1; i > 0; i--) {
+        const diff = prices[i] - prices[i-1];
+        if (diff === 0) continue; // Skip flat ticks for streak detection
+        const type = diff > 0 ? "U" : "D";
+        if (streakType === null) streakType = type;
+
+        if (type === streakType) {
+            currentStreak++;
+        } else {
+            break;
+        }
+    }
+
+    if (currentStreak >= 5) {
+        const streakStartIdx = streakEndIdx - currentStreak + 1;
+        const presequenceStartIdx = streakStartIdx - 5;
+
+        if (presequenceStartIdx >= 0) {
+            const preSequenceTicks = prices.slice(presequenceStartIdx, streakStartIdx);
+            const sequenceStr = preSequenceTicks.map((p, i) => {
+                if (i === 0) return "";
+                const d = p - preSequenceTicks[i-1];
+                return d > 0 ? "U" : (d < 0 ? "D" : "Z");
+            }).join("");
+
+            self.postMessage({
+                type: 'NEW_SIGNAL',
+                data: {
+                    sequence: sequenceStr,
+                    action: streakType === "U" ? "CALL" : "PUT",
+                    startState: {
+                        rsi: rsiArr[presequenceStartIdx],
+                        bbw: bbwArr[presequenceStartIdx],
+                        strain: strainArr[presequenceStartIdx]
+                    },
+                    hitState: {
+                        rsi: rsiArr[streakStartIdx - 1],
+                        bbw: bbwArr[streakStartIdx - 1],
+                        strain: strainArr[streakStartIdx - 1]
+                    }
+                }
+            });
+        }
+    }
 }

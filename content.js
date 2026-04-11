@@ -66,6 +66,8 @@
   let parsedSeqMasterConfig = null;
   let parsedDnaConfig = null;
   let dnaWorker = null;
+  let activeTradePool = new Map();
+  let discoveryDb = null;
   let sHigh = 0, sLow = 0, speedMean = 0, speedStd = 0, bbWidth = 0, prevBbWidth = 0;
   let signals = [], sessionTradesAll = [];
   let tickSeq = 0, lastSignalTickIndex = -999, upStreak = 0, downStreak = 0;
@@ -98,6 +100,12 @@
         <div class="tt-row"><span class="tt-label" id="tt-score-label">Live Score</span><span class="tt-val" id="tt-live-score">B: 0 / S: 0</span></div>
         <div class="tt-row"><span class="tt-label">Session W/L</span><span class="tt-val"><span id="tt-wins">0</span> / <span id="tt-losses">0</span></span></div>
         <div id="tt-signals-list"></div>
+        <div id="tt-discovery-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px; max-height:200px; overflow:hidden; flex-direction:column; gap:4px;">
+          <div style="font-size:10px; color:#7a8499; border-bottom:1px solid #3a4260; padding-bottom:2px;">LIVE DISCOVERY FEED</div>
+          <div id="tt-discovery-feed" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#3ecf60; max-height:80px;"></div>
+          <div style="font-size:10px; color:#e04040; border-bottom:1px solid #3d1a1a; padding-bottom:2px; margin-top:4px;">EXECUTION FAILURES (PURGED)</div>
+          <div id="tt-fail-exec-list" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#e04040; max-height:60px;"></div>
+        </div>
         <div id="tt-dna-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px;">
           <div style="font-size:10px; color:#7a8499; margin-bottom:4px; display:flex; justify-content:space-between;">
             <span>DNA MATCH METER</span>
@@ -141,7 +149,7 @@
           <button id="tt-clear-logs" style="flex:1;background:#3d1a1a;color:#e04040;font-size:10px;border:1px solid #7a3a10;border-radius:4px;cursor:pointer;">Clear Logs</button>
         </div>
         <div id="tt-config">
-          <div class="tt-config-row"><label>Mode</label><select id="tt-cfg-strategy-mode"><option value="statisticalDna">🧬 Statistical DNA</option><option value="unleashed">🔥 Unleashed High-Activity</option><option value="seqMaster">🧬 Sequence Master</option><option value="trendIgnition">🚀 Trend Ignition</option><option value="reversalIgnition">🔄 Reversal Ignition</option><option value="ignitionSuite">Full Ignition Suite</option><option value="ignition">Ignition</option><option value="structural3">Structural 3</option><option value="structural2">Structural 2</option><option value="structural">Structural</option><option value="hybrid">Hybrid</option><option value="momentum">Momentum</option><option value="reversal">Reversal</option></select></div>
+          <div class="tt-config-row"><label>Mode</label><select id="tt-cfg-strategy-mode"><option value="discoveryEvolution">🧬 Discovery Evolution</option><option value="statisticalDna">🧬 Statistical DNA</option><option value="unleashed">🔥 Unleashed High-Activity</option><option value="seqMaster">🧬 Sequence Master</option><option value="trendIgnition">🚀 Trend Ignition</option><option value="reversalIgnition">🔄 Reversal Ignition</option><option value="ignitionSuite">Full Ignition Suite</option><option value="ignition">Ignition</option><option value="structural3">Structural 3</option><option value="structural2">Structural 2</option><option value="structural">Structural</option><option value="hybrid">Hybrid</option><option value="momentum">Momentum</option><option value="reversal">Reversal</option></select></div>
           <div id="tt-cfg-seq-master-container" style="display:none; flex-direction:column; gap:4px; margin-top:4px;">
             <label style="font-size:10px; color:#7a8499;">DNA JSON Config</label>
             <textarea id="tt-cfg-seq-master-json" placeholder='Paste JSON DNA here...' style="width:100%; height:120px; background:#1e2338; border:1px solid #3a4260; color:#e0e6f0; border-radius:4px; font-size:10px; font-family:monospace; resize:vertical;"></textarea>
@@ -531,9 +539,10 @@
       lastUI.dirStreak = streakStr;
     }
 
-    if (cfg.strategyMode === 'statisticalDna' && dnaWorker && parsedDnaConfig) {
+    if (['statisticalDna', 'discoveryEvolution'].includes(cfg.strategyMode) && dnaWorker) {
       const priceHistory = ticks.map(t => t.price);
       dnaWorker.postMessage({ type: 'compute', prices: priceHistory, config: parsedDnaConfig });
+      if (cfg.strategyMode === 'discoveryEvolution') checkDiscoveryMatch();
     }
 
     try { detectSignal(); lastSignalEvalAt = Date.now(); } catch (e) { evalErrorCount++; }
@@ -913,7 +922,31 @@
     return null;
   }
 
-  function triggerSignal(type, conf, triggerDesc, triggerDigit, startTickIndex) {
+  function checkDiscoveryMatch() {
+    if (ticks.length < 5) return;
+    const last5 = ticks.slice(-5);
+    const sequenceStr = last5.map((t, i) => {
+      if (i === 0) return "";
+      const d = t.price - last5[i-1].price;
+      return d > 0 ? "U" : (d < 0 ? "D" : "Z");
+    }).join("");
+
+    const currentRSI = last5[4].rsi || 0;
+    const currentBBW = bbWidth || 0;
+
+    for (const [key, pattern] of activeTradePool.entries()) {
+      if (pattern.sequence === sequenceStr) {
+        const rsiMatch = Math.abs(currentRSI - pattern.hitState.rsi) < 0.5;
+        const bbwMatch = Math.abs(currentBBW - pattern.hitState.bbw) < 0.01;
+        if (rsiMatch && bbwMatch) {
+          const type = pattern.action === 'CALL' ? 'BUY' : 'SELL';
+          triggerSignal(type, 100, `EVO:${pattern.sequence}`, null, null, pattern);
+        }
+      }
+    }
+  }
+
+  function triggerSignal(type, conf, triggerDesc, triggerDigit, startTickIndex, patternRef) {
     const n = ticks.length; if (n === 0) return;
     const t0 = ticks[n - 1];
     const mode = cfg.strategyMode;
@@ -944,6 +977,7 @@
       triggerDesc: triggerDesc,
       startTickIndex: startTickIndex || tickSeq + 1,
       signalTime: Date.now(),
+      patternRef: patternRef,
       metrics: {
         rsi: t0.rsi || 0,
         adx: t0.adx || 0,
@@ -1064,7 +1098,10 @@
   }
 
   async function initDnaWorker() {
-    if (cfg.strategyMode !== 'statisticalDna') {
+    const isDna = cfg.strategyMode === 'statisticalDna';
+    const isEvo = cfg.strategyMode === 'discoveryEvolution';
+
+    if (!isDna && !isEvo) {
       if (dnaWorker) {
         dnaWorker.terminate();
         dnaWorker = null;
@@ -1083,12 +1120,46 @@
       dnaWorker.onmessage = function(e) {
         if (e.data.type === 'signal') {
           handleDnaSignal(e.data.data);
+        } else if (e.data.type === 'NEW_SIGNAL') {
+          handleNewDiscoverySignal(e.data.data);
         }
       };
     } catch (e) {
       console.error("Failed to init DNA worker", e);
       showAlert('DNA ENGINE ERROR: Check Console');
     }
+  }
+
+  function handleNewDiscoverySignal(data) {
+    const key = `${data.sequence}-${data.action}`;
+    if (!activeTradePool.has(key)) {
+      activeTradePool.set(key, data);
+      updateDiscoveryUI(data);
+    }
+  }
+
+  function logDiscoveryFailure(pattern) {
+    if (!discoveryDb) return;
+    const tx = discoveryDb.transaction('fail_log', 'readwrite');
+    const store = tx.objectStore('fail_log');
+    store.add({
+      timestamp: Date.now(),
+      sequence: pattern.sequence,
+      action: pattern.action,
+      startState: pattern.startState,
+      hitState: pattern.hitState
+    });
+  }
+
+  function updateDiscoveryUI(signal, isFail = false) {
+    const container = isFail ? document.getElementById('tt-fail-exec-list') : document.getElementById('tt-discovery-feed');
+    if (!container) return;
+    const el = document.createElement('div');
+    el.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+    el.style.padding = '2px 0';
+    el.innerText = `${signal.sequence} | ${signal.action} | RSI: ${signal.startState.rsi.toFixed(1)}->${signal.hitState.rsi.toFixed(1)}`;
+    container.prepend(el);
+    if (container.children.length > 15) container.lastChild.remove();
   }
 
   function handleDnaSignal(data) {
@@ -1103,12 +1174,20 @@
 
   function updateDnaUI(data) {
     const diag = document.getElementById('tt-dna-diag');
+    const discoveryDiag = document.getElementById('tt-discovery-diag');
     const signals = document.getElementById('tt-signals-list');
+
     if (cfg.strategyMode === 'statisticalDna') {
       if (diag) diag.style.display = 'block';
+      if (discoveryDiag) discoveryDiag.style.display = 'none';
+      if (signals) signals.style.display = 'none';
+    } else if (cfg.strategyMode === 'discoveryEvolution') {
+      if (diag) diag.style.display = 'none';
+      if (discoveryDiag) discoveryDiag.style.display = 'flex';
       if (signals) signals.style.display = 'none';
     } else {
       if (diag) diag.style.display = 'none';
+      if (discoveryDiag) discoveryDiag.style.display = 'none';
       if (signals) signals.style.display = 'flex';
       return;
     }
@@ -1373,6 +1452,17 @@
     if (simTrade) {
       simTrade.result = res.result;
       simTrade.priceAfter = ticks.length ? ticks[ticks.length - 1].price : simTrade.price;
+
+      // Discovery Evolution: The Purge
+      if (simTrade.strategy === 'discoveryEvolution' && simTrade.patternRef) {
+        const pattern = simTrade.patternRef;
+        const key = `${pattern.sequence}-${pattern.action}`;
+        if (res.result === 'LOSS') {
+          activeTradePool.delete(key);
+          logDiscoveryFailure(pattern);
+          updateDiscoveryUI(pattern, true);
+        }
+      }
     }
     lastTradeClosedAt = Date.now();
     lastTradeClosedTick = tickSeq;
@@ -1416,6 +1506,18 @@
     }
     return false;
   }
-  function init() { if (document.getElementById('tt-overlay')) return; cfg = loadCfg(); buildOverlay(); initDnaWorker(); connect(); startWatchdog(); setupFlyoutObserver(); window._tt_cfg = cfg; window._tt_detect = detectSignal; }
+  function initIndexedDB() {
+    const request = indexedDB.open("Discovery_Audit", 1);
+    request.onupgradeneeded = (e) => {
+      discoveryDb = e.target.result;
+      if (!discoveryDb.objectStoreNames.contains('fail_log')) {
+        discoveryDb.createObjectStore('fail_log', { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    request.onsuccess = (e) => { discoveryDb = e.target.result; };
+    request.onerror = (e) => { console.error("IndexedDB error", e); };
+  }
+
+  function init() { if (document.getElementById('tt-overlay')) return; cfg = loadCfg(); buildOverlay(); initDnaWorker(); initIndexedDB(); connect(); startWatchdog(); setupFlyoutObserver(); window._tt_cfg = cfg; window._tt_detect = detectSignal; }
   if (document.body) init(); else document.addEventListener('DOMContentLoaded', init);
 })();
