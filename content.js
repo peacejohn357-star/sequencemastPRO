@@ -63,6 +63,8 @@
   let ticks = [];
   let tickDirections = [];
   let speedHistory = [];
+  let workerMetrics = { rsi: 50, bbw: 0, str: 0 };
+  let rsiState = { avgGain: 0, avgLoss: 0, initialized: false };
   let parsedSeqMasterConfig = null;
   let parsedDnaConfig = null;
   let dnaWorker = null;
@@ -112,6 +114,7 @@
           <div id="tt-discovery-feed" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#3ecf60; max-height:150px; scrollbar-width:thin;"></div>
           <div style="font-size:10px; color:#e04040; border-bottom:1px solid #3d1a1a; padding-bottom:2px; margin-top:4px;">EXECUTION FAILURES (PURGED)</div>
           <div id="tt-fail-exec-list" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#e04040; max-height:100px; scrollbar-width:thin;"></div>
+          <div id="tt-discovery-diag-gate" style="font-size:9px; color:#f0a060; border-top:1px solid #3a4260; padding-top:2px; margin-top:2px; font-style:italic;">Gate: IDLE</div>
         </div>
         <div id="tt-dna-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px;">
           <div style="font-size:10px; color:#7a8499; margin-bottom:4px; display:flex; justify-content:space-between;">
@@ -486,16 +489,29 @@
     let rsi = 50;
     const rsiP = cfg.rsiPeriod || 14;
     if (ticks.length >= rsiP) {
-      let up = 0, down = 0;
-      for (let i = 0; i < rsiP; i++) {
-        const curr = i === 0 ? { price } : ticks[ticks.length - i];
-        const prev = i === 0 ? ticks[ticks.length - 1] : ticks[ticks.length - i - 1];
-        const d = curr.price - prev.price;
-        if (d > 0) up += d; else down += Math.abs(d);
+      const d = prevTick ? price - prevTick.price : 0;
+      if (!rsiState.initialized) {
+        // Initialize with SMA
+        let gain = 0, loss = 0;
+        const slice = ticks.slice(-rsiP);
+        for (let i = 1; i < slice.length; i++) {
+          const diff = slice[i].price - slice[i-1].price;
+          if (diff > 0) gain += diff; else loss -= diff;
+        }
+        // Handle current tick in init
+        if (d > 0) gain += d; else loss -= d;
+        rsiState.avgGain = gain / rsiP;
+        rsiState.avgLoss = loss / rsiP;
+        rsiState.initialized = true;
+      } else {
+        // Wilder's Smoothing (EMA style)
+        const gain = d > 0 ? d : 0;
+        const loss = d < 0 ? -d : 0;
+        rsiState.avgGain = (rsiState.avgGain * (rsiP - 1) + gain) / rsiP;
+        rsiState.avgLoss = (rsiState.avgLoss * (rsiP - 1) + loss) / rsiP;
       }
-      const avgUp = up / rsiP, avgDown = down / rsiP;
-      if (avgUp === 0 && avgDown === 0) rsi = 50;
-      else rsi = avgDown === 0 ? 100 : 100 - (100 / (1 + avgUp / avgDown));
+      if (rsiState.avgLoss === 0) rsi = 100;
+      else rsi = 100 - (100 / (1 + rsiState.avgGain / rsiState.avgLoss));
     }
 
     if (ticks.length >= 10) {
@@ -577,13 +593,20 @@
       if (cfg.strategyMode === 'discoveryEvolution') {
         // Confirmation Tick Handling
         if (isArmed && armedSignal) {
-          if (dirChar === (armedSignal.action === 'CALL' ? 'U' : 'D')) {
+          const targetDir = armedSignal.action === 'CALL' ? 'U' : 'D';
+          if (dirChar === targetDir) {
             const type = armedSignal.action === 'CALL' ? 'BUY' : 'SELL';
+            const msg = `CONFIRMED: ${armedSignal.sequence}`;
+            if (cfg.debugSignals) console.log(`[EVO] ${msg} triggered ${type}`);
+            setDiscoveryGate(msg);
             triggerSignal(type, 100, `EVO:${armedSignal.sequence}`, null, null, armedSignal);
             isArmed = false;
             armedSignal = null;
           } else {
             // Since dirChar is never Z now, any direction that is not the target will disarm
+            const msg = `DISARMED: Dir ${dirChar}`;
+            if (cfg.debugSignals) console.warn(`[EVO] ${msg} (Expected ${targetDir})`);
+            setDiscoveryGate(msg);
             isArmed = false;
             armedSignal = null;
           }
@@ -1000,9 +1023,9 @@
       return lastDirMatch;
     }).join("");
 
-    const currentRSI = ticks[ticks.length - 1].rsi || 0;
-    const currentBBW = bbWidth || 0;
-    const currentStr = currentStrain || 0;
+    const currentRSI = workerMetrics.rsi;
+    const currentBBW = workerMetrics.bbw;
+    const currentStr = workerMetrics.str;
 
     for (const [key, pattern] of activeTradePool.entries()) {
       if (pattern.sequence === sequenceStr) {
@@ -1018,7 +1041,9 @@
         if (rsiMatch && bbwMatch && strMatch && regimeMatch) {
           isArmed = true;
           armedSignal = pattern;
-          console.log(`[EVO] ARMED: ${pattern.sequence} ${pattern.action}`);
+          const msg = `ARMED: ${pattern.sequence}`;
+          console.log(`[EVO] ${msg} ${pattern.action}`);
+          setDiscoveryGate(msg);
         } else if (cfg.debugSignals && tickSeq % 5 === 0) {
           // Log why it didn't arm
           let reasons = [];
@@ -1026,7 +1051,9 @@
           if (!bbwMatch) reasons.push(`BBW Δ:${bbwDiff.toFixed(5)}`);
           if (!strMatch) reasons.push(`STR Δ:${strDiff.toFixed(2)}`);
           if (!regimeMatch) reasons.push(`Regime ${currentRegime} vs ${pattern.regime}`);
-          console.warn(`[EVO] SEQUENCE MATCH (${pattern.sequence}) BUT GATED: ${reasons.join(", ")}`);
+          const msg = `Gated: ${reasons[0]}`;
+          console.warn(`[EVO] SEQUENCE MATCH (${pattern.sequence}) BUT ${msg} (${reasons.join(", ")})`);
+          setDiscoveryGate(msg);
         }
       }
     }
@@ -1039,9 +1066,28 @@
     const currentTickIndex = tickSeq;
 
     if (mode !== 'unleashed' && mode !== 'microTrap') {
-      if (currentTickIndex - lastSignalTickIndex < cfg.postTradeCooldownTicks || Date.now() - lastTradeClosedAt < cfg.postTradeCooldownMs) return;
+      const tickDiff = currentTickIndex - lastSignalTickIndex;
+      const msDiff = Date.now() - lastTradeClosedAt;
+      const tickCooldown = cfg.postTradeCooldownTicks || 0;
+      const msCooldown = cfg.postTradeCooldownMs || 0;
+
+      if (tickDiff < tickCooldown || msDiff < msCooldown) {
+        if (cfg.debugSignals) {
+          const msg = `Cooldown: ${tickDiff}/${tickCooldown}t`;
+          console.warn(`[SIGNAL GATED] ${msg}, ${msDiff}/${msCooldown} ms`);
+          setDiscoveryGate(msg);
+        }
+        return;
+      }
     }
-    if (realExecState !== 'IDLE') return;
+    if (realExecState !== 'IDLE') {
+      if (cfg.debugSignals) {
+        const msg = `Engine Busy: ${realExecState}`;
+        console.warn(`[SIGNAL GATED] ${msg} (${realLockReason})`);
+        setDiscoveryGate(msg);
+      }
+      return;
+    }
 
     lastSignalTickIndex = currentTickIndex;
     let finalConf = conf;
@@ -1124,6 +1170,7 @@
     updateWinsLossesUI();
   }
   function showAlert(msg) { const el = document.getElementById('tt-alert'); if (el) { el.textContent = msg; el.classList.add('tt-visible'); setTimeout(() => el.classList.remove('tt-visible'), 5000); } }
+  function setDiscoveryGate(msg) { const el = document.getElementById('tt-discovery-diag-gate'); if (el) { el.textContent = `Gate: ${msg}`; el.style.color = msg.includes('IDLE') ? '#3ecf60' : (msg.includes('CONFIRMED') ? '#3ecf60' : '#f0a060'); } }
   function recordSessionTrade(sig) { sessionTradesAll.push(sig); if (sessionTradesAll.length > SESSION_HISTORY_CAP) sessionTradesAll.shift(); }
   function exportCSV() {
     if (!sessionTradesAll.length) return;
@@ -1332,6 +1379,12 @@
         currentStrain = data.stats ? data.stats.str : 0;
         if (data.stats && data.stats.roc2 !== undefined) {
           currentROC = data.stats.roc2;
+        }
+        // Discovery Synchronisation
+        if (data.stats) {
+          workerMetrics.rsi = data.stats.rsi;
+          workerMetrics.bbw = data.stats.bbw;
+          workerMetrics.str = data.stats.str;
         }
     }
     updateDnaUI({ metrics: data });
