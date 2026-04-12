@@ -112,6 +112,7 @@
           <div id="tt-discovery-feed" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#3ecf60; max-height:150px; scrollbar-width:thin;"></div>
           <div style="font-size:10px; color:#e04040; border-bottom:1px solid #3d1a1a; padding-bottom:2px; margin-top:4px;">EXECUTION FAILURES (PURGED)</div>
           <div id="tt-fail-exec-list" style="flex:1; overflow-y:auto; font-size:10px; font-family:monospace; color:#e04040; max-height:100px; scrollbar-width:thin;"></div>
+          <div id="tt-discovery-diag-gate" style="font-size:9px; color:#f0a060; border-top:1px solid #3a4260; padding-top:2px; margin-top:2px; font-style:italic;">Gate: IDLE</div>
         </div>
         <div id="tt-dna-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px;">
           <div style="font-size:10px; color:#7a8499; margin-bottom:4px; display:flex; justify-content:space-between;">
@@ -577,13 +578,20 @@
       if (cfg.strategyMode === 'discoveryEvolution') {
         // Confirmation Tick Handling
         if (isArmed && armedSignal) {
-          if (dirChar === (armedSignal.action === 'CALL' ? 'U' : 'D')) {
+          const targetDir = armedSignal.action === 'CALL' ? 'U' : 'D';
+          if (dirChar === targetDir) {
             const type = armedSignal.action === 'CALL' ? 'BUY' : 'SELL';
+            const msg = `CONFIRMED: ${armedSignal.sequence}`;
+            if (cfg.debugSignals) console.log(`[EVO] ${msg} triggered ${type}`);
+            setDiscoveryGate(msg);
             triggerSignal(type, 100, `EVO:${armedSignal.sequence}`, null, null, armedSignal);
             isArmed = false;
             armedSignal = null;
           } else {
             // Since dirChar is never Z now, any direction that is not the target will disarm
+            const msg = `DISARMED: Dir ${dirChar}`;
+            if (cfg.debugSignals) console.warn(`[EVO] ${msg} (Expected ${targetDir})`);
+            setDiscoveryGate(msg);
             isArmed = false;
             armedSignal = null;
           }
@@ -1018,7 +1026,9 @@
         if (rsiMatch && bbwMatch && strMatch && regimeMatch) {
           isArmed = true;
           armedSignal = pattern;
-          console.log(`[EVO] ARMED: ${pattern.sequence} ${pattern.action}`);
+          const msg = `ARMED: ${pattern.sequence}`;
+          console.log(`[EVO] ${msg} ${pattern.action}`);
+          setDiscoveryGate(msg);
         } else if (cfg.debugSignals && tickSeq % 5 === 0) {
           // Log why it didn't arm
           let reasons = [];
@@ -1026,7 +1036,9 @@
           if (!bbwMatch) reasons.push(`BBW Δ:${bbwDiff.toFixed(5)}`);
           if (!strMatch) reasons.push(`STR Δ:${strDiff.toFixed(2)}`);
           if (!regimeMatch) reasons.push(`Regime ${currentRegime} vs ${pattern.regime}`);
-          console.warn(`[EVO] SEQUENCE MATCH (${pattern.sequence}) BUT GATED: ${reasons.join(", ")}`);
+          const msg = `Gated: ${reasons[0]}`;
+          console.warn(`[EVO] SEQUENCE MATCH (${pattern.sequence}) BUT ${msg} (${reasons.join(", ")})`);
+          setDiscoveryGate(msg);
         }
       }
     }
@@ -1039,9 +1051,28 @@
     const currentTickIndex = tickSeq;
 
     if (mode !== 'unleashed' && mode !== 'microTrap') {
-      if (currentTickIndex - lastSignalTickIndex < cfg.postTradeCooldownTicks || Date.now() - lastTradeClosedAt < cfg.postTradeCooldownMs) return;
+      const tickDiff = currentTickIndex - lastSignalTickIndex;
+      const msDiff = Date.now() - lastTradeClosedAt;
+      const tickCooldown = cfg.postTradeCooldownTicks || 0;
+      const msCooldown = cfg.postTradeCooldownMs || 0;
+
+      if (tickDiff < tickCooldown || msDiff < msCooldown) {
+        if (cfg.debugSignals) {
+          const msg = `Cooldown: ${tickDiff}/${tickCooldown}t`;
+          console.warn(`[SIGNAL GATED] ${msg}, ${msDiff}/${msCooldown} ms`);
+          setDiscoveryGate(msg);
+        }
+        return;
+      }
     }
-    if (realExecState !== 'IDLE') return;
+    if (realExecState !== 'IDLE') {
+      if (cfg.debugSignals) {
+        const msg = `Engine Busy: ${realExecState}`;
+        console.warn(`[SIGNAL GATED] ${msg} (${realLockReason})`);
+        setDiscoveryGate(msg);
+      }
+      return;
+    }
 
     lastSignalTickIndex = currentTickIndex;
     let finalConf = conf;
@@ -1124,6 +1155,7 @@
     updateWinsLossesUI();
   }
   function showAlert(msg) { const el = document.getElementById('tt-alert'); if (el) { el.textContent = msg; el.classList.add('tt-visible'); setTimeout(() => el.classList.remove('tt-visible'), 5000); } }
+  function setDiscoveryGate(msg) { const el = document.getElementById('tt-discovery-diag-gate'); if (el) { el.textContent = `Gate: ${msg}`; el.style.color = msg.includes('IDLE') ? '#3ecf60' : (msg.includes('CONFIRMED') ? '#3ecf60' : '#f0a060'); } }
   function recordSessionTrade(sig) { sessionTradesAll.push(sig); if (sessionTradesAll.length > SESSION_HISTORY_CAP) sessionTradesAll.shift(); }
   function exportCSV() {
     if (!sessionTradesAll.length) return;
