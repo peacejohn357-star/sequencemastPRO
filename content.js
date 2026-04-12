@@ -72,8 +72,9 @@
   let discoveryDb = null;
   let sHigh = 0, sLow = 0, speedMean = 0, speedStd = 0, bbWidth = 0, prevBbWidth = 0;
   let currentStrain = 0, currentRegime = 'D', currentEntropy = 0;
+  let ema10 = 0, ema50 = 0, stdDev10 = 0, stdDev20 = 0, currentROC = 0;
   let isArmed = false, armedSignal = null;
-  let microTrapArmed = false, microTrapSignal = null, microTrapCooldown = 0, microTrapZCounter = 0, currentROC = 0;
+  let microTrapArmed = false, microTrapSignal = null, microTrapCooldown = 0, microTrapZCounter = 0;
   let signals = [], sessionTradesAll = [];
   let tickSeq = 0, lastSignalTickIndex = -999, upStreak = 0, downStreak = 0;
   let lastTickProcessedAt = 0, lastSignalEvalAt = 0, watchdogInterval = null, evalErrorCount = 0;
@@ -407,7 +408,26 @@
     }
   }
 
+  function detectCurrentRegimeLocal() {
+    const t0 = ticks[ticks.length - 1];
+    if (!t0) return 'D';
+    const rsi = t0.rsi;
+    const bbw = bbWidth;
+    const strain = currentStrain;
+
+    // Priority: C > A > B > D (Matches dnaWorker.js)
+    if (strain > 2.0 && (rsi > 70 || rsi < 30)) return 'C';
+    if (bbw < 0.6 && rsi >= 42 && rsi <= 58) return 'A';
+
+    // Simplification for B: Trend Detection
+    const isB = strain < 0.5; // Placeholder for Regime B logic
+    if (isB) return 'B';
+
+    return 'D';
+  }
+
   function calculatePercentiles() {
+    currentRegime = detectCurrentRegimeLocal();
     if (speedHistory.length >= 10) {
       const sorted = speedHistory.slice().sort((a, b) => a - b);
       const p30 = sorted[Math.floor(sorted.length * 0.3)], p70 = sorted[Math.floor(sorted.length * 0.7)];
@@ -468,6 +488,12 @@
     const kTrend = 2 / ((cfg.trendEmaPeriod || 15) + 1);
     const trendEma = prevTick ? (price * kTrend + (prevTick.trendEma || price) * (1 - kTrend)) : price;
 
+    // Exact DNA parity indicators
+    const k10 = 2 / (10 + 1);
+    ema10 = prevTick ? (price * k10 + (prevTick.ema10 || price) * (1 - k10)) : price;
+    const k50 = 2 / (50 + 1);
+    ema50 = prevTick ? (price * k50 + (prevTick.ema50 || price) * (1 - k50)) : price;
+
     let adx = 0;
     const adxP = cfg.adxPeriod || 14;
     if (ticks.length >= adxP) {
@@ -504,7 +530,7 @@
         rsiState.avgLoss = loss / rsiP;
         rsiState.initialized = true;
       } else {
-        // Wilder's Smoothing (EMA style)
+        // Wilder's Smoothing (EMA style) - Exact dnaWorker.js parity
         const gain = d > 0 ? d : 0;
         const loss = d < 0 ? -d : 0;
         rsiState.avgGain = (rsiState.avgGain * (rsiP - 1) + gain) / rsiP;
@@ -515,12 +541,32 @@
     }
 
     if (ticks.length >= 10) {
-      const slice = ticks.slice(-10);
-      const sqDiffSum = slice.reduce((a, b) => a + Math.pow(b.price - trendEma, 2), 0);
-      const stdDev = Math.sqrt(sqDiffSum / 10);
+      const n = 10;
+      let sum = price;
+      for (let i = 0; i < n - 1; i++) sum += ticks[ticks.length - 1 - i].price;
+      const mean = sum / n;
+
+      let sqDiffSum = Math.pow(price - mean, 2);
+      for (let i = 0; i < n - 1; i++) sqDiffSum += Math.pow(ticks[ticks.length - 1 - i].price - mean, 2);
+
+      stdDev10 = Math.sqrt(sqDiffSum / n);
       prevBbWidth = bbWidth;
-      bbWidth = stdDev * 4; // Upper - Lower = 4 * stdDev
+      bbWidth = stdDev10 * 4;
     }
+    if (ticks.length >= 20) {
+        const n = 20;
+        let sum = price;
+        for (let i = 0; i < n - 1; i++) sum += ticks[ticks.length - 1 - i].price;
+        const mean = sum / n;
+
+        let sqDiffSum = Math.pow(price - mean, 2);
+        for (let i = 0; i < n - 1; i++) sqDiffSum += Math.pow(ticks[ticks.length - 1 - i].price - mean, 2);
+
+        stdDev20 = Math.sqrt(sqDiffSum / n);
+        const std2 = Math.max(stdDev20, 0.0001) * 2;
+        currentStrain = Math.abs(price - ema50) / std2;
+    }
+    currentROC = ticks.length >= 2 ? price - ticks[ticks.length - 2].price : 0;
 
     let speed5 = 0;
     if (ticks.length >= 6) {
@@ -536,7 +582,7 @@
     tickDirections.push(dirChar);
     if (tickDirections.length > 20) tickDirections.shift();
 
-    const state = { epoch, price, direction, deltaSteps, deltaTime, speed, absSpeed, speedTrend, upStreak, downStreak, lastDigit, deltaChange: deltaChangeVal, receivedAt: now, accel, intensity, preSpeed, acceleration, trendEma, ema10: trendEma, adx, rsi, speed5, accel5 };
+    const state = { epoch, price, direction, deltaSteps, deltaTime, speed, absSpeed, speedTrend, upStreak, downStreak, lastDigit, deltaChange: deltaChangeVal, receivedAt: now, accel, intensity, preSpeed, acceleration, trendEma, ema10, ema50, stdDev10, stdDev20, strain: currentStrain, adx, rsi, speed5, accel5 };
     ticks.push(state); if (ticks.length > TICK_BUF) ticks.shift();
     speedHistory.push(absSpeed); if (speedHistory.length > SPEED_BUF) speedHistory.shift();
     calculatePercentiles(); lastTickProcessedAt = Date.now();
@@ -1023,9 +1069,10 @@
       return lastDirMatch;
     }).join("");
 
-    const currentRSI = workerMetrics.rsi;
-    const currentBBW = workerMetrics.bbw;
-    const currentStr = workerMetrics.str;
+    const t0 = ticks[ticks.length - 1];
+    const currentRSI = t0.rsi;
+    const currentBBW = bbWidth;
+    const currentStr = currentStrain;
 
     for (const [key, pattern] of activeTradePool.entries()) {
       if (pattern.sequence === sequenceStr) {
@@ -1374,17 +1421,32 @@
 
   function handleDnaMetrics(data) {
     if (data) {
-        currentRegime = data.regime || 'D';
+        // currentRegime is now managed locally in handleTick/calculatePercentiles
+        // currentStrain is now managed locally in handleTick
+        // currentROC is now managed locally in handleTick
         currentEntropy = data.entropy || 0;
-        currentStrain = data.stats ? data.stats.str : 0;
-        if (data.stats && data.stats.roc2 !== undefined) {
-          currentROC = data.stats.roc2;
-        }
-        // Discovery Synchronisation
+
+        // Discovery Synchronisation (workerMetrics remains for diagnostic cross-check if needed,
+        // but checkDiscoveryMatch now uses high-speed local metrics)
         if (data.stats) {
           workerMetrics.rsi = data.stats.rsi;
           workerMetrics.bbw = data.stats.bbw;
           workerMetrics.str = data.stats.str;
+        }
+
+        // Parity Diagnostic Logging (Optional, only if debugSignals is on)
+        if (cfg.debugSignals && tickSeq % 10 === 0) {
+            const t0 = ticks[ticks.length - 1];
+            if (t0 && data.stats) {
+                const rsiDiff = Math.abs(t0.rsi - data.stats.rsi);
+                const bbwDiff = Math.abs(bbWidth - data.stats.bbw);
+                const strDiff = Math.abs(currentStrain - data.stats.str);
+
+                if (rsiDiff > 0.1) console.warn(`[PARITY] RSI Mismatch: Local=${t0.rsi.toFixed(2)} Worker=${data.stats.rsi.toFixed(2)}`);
+                if (bbwDiff > 0.001) console.warn(`[PARITY] BBW Mismatch: Local=${bbWidth.toFixed(4)} Worker=${data.stats.bbw.toFixed(4)}`);
+                if (strDiff > 0.1) console.warn(`[PARITY] STR Mismatch: Local=${currentStrain.toFixed(2)} Worker=${data.stats.str.toFixed(2)}`);
+                if (currentRegime !== data.regime) console.warn(`[PARITY] Regime Mismatch: Local=${currentRegime} Worker=${data.regime}`);
+            }
         }
     }
     updateDnaUI({ metrics: data });
