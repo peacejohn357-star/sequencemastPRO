@@ -71,6 +71,7 @@
   let sHigh = 0, sLow = 0, speedMean = 0, speedStd = 0, bbWidth = 0, prevBbWidth = 0;
   let currentStrain = 0, currentRegime = 'D', currentEntropy = 0;
   let isArmed = false, armedSignal = null;
+  let microTrapArmed = false, microTrapSignal = null, microTrapCooldown = 0, microTrapZCounter = 0, currentROC = 0;
   let signals = [], sessionTradesAll = [];
   let tickSeq = 0, lastSignalTickIndex = -999, upStreak = 0, downStreak = 0;
   let lastTickProcessedAt = 0, lastSignalEvalAt = 0, watchdogInterval = null, evalErrorCount = 0;
@@ -100,6 +101,7 @@
         <div class="tt-row"><span class="tt-label">RSI / Trend</span><span class="tt-val" id="tt-rsi-stats">0 / 0.00</span></div>
         <div class="tt-row"><span class="tt-label">Int/Eps/Accel</span><span class="tt-val" id="tt-unleashed-stats">0 / 0 / 0.00000</span></div>
         <div class="tt-row" id="tt-regime-row" style="justify-content:center; font-weight:bold; color:#7ec8e3;"><span id="tt-regime-display">D · NOISE · BBW: 0.00</span></div>
+        <div class="tt-row" id="tt-trap-row" style="justify-content:center; font-weight:bold; color:#f0a060; display:none;"><span id="tt-trap-display">ROC: 0.00 | TRAP: IDLE</span></div>
         <div class="tt-row"><span class="tt-label">Session W/L</span><span class="tt-val"><span id="tt-wins">0</span> / <span id="tt-losses">0</span></span></div>
         <div id="tt-signals-list"></div>
         <div id="tt-discovery-diag" style="display:none; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; margin-top:4px; max-height:400px; overflow:hidden; flex-direction:column; gap:4px;">
@@ -154,7 +156,7 @@
           <button id="tt-clear-logs" style="flex:1;background:#3d1a1a;color:#e04040;font-size:10px;border:1px solid #7a3a10;border-radius:4px;cursor:pointer;">Clear Logs</button>
         </div>
         <div id="tt-config">
-          <div class="tt-config-row"><label>Mode</label><select id="tt-cfg-strategy-mode"><option value="discoveryEvolution">🧬 Discovery Evolution</option><option value="statisticalDna">🧬 Statistical DNA</option><option value="unleashed">🔥 Unleashed High-Activity</option><option value="seqMaster">🧬 Sequence Master</option><option value="trendIgnition">🚀 Trend Ignition</option><option value="reversalIgnition">🔄 Reversal Ignition</option><option value="ignitionSuite">Full Ignition Suite</option><option value="ignition">Ignition</option><option value="structural3">Structural 3</option><option value="structural2">Structural 2</option><option value="structural">Structural</option><option value="hybrid">Hybrid</option><option value="momentum">Momentum</option><option value="reversal">Reversal</option></select></div>
+          <div class="tt-config-row"><label>Mode</label><select id="tt-cfg-strategy-mode"><option value="discoveryEvolution">🧬 Discovery Evolution</option><option value="microTrap">🪤 Micro-Momentum Trap</option><option value="statisticalDna">🧬 Statistical DNA</option><option value="unleashed">🔥 Unleashed High-Activity</option><option value="seqMaster">🧬 Sequence Master</option><option value="trendIgnition">🚀 Trend Ignition</option><option value="reversalIgnition">🔄 Reversal Ignition</option><option value="ignitionSuite">Full Ignition Suite</option><option value="ignition">Ignition</option><option value="structural3">Structural 3</option><option value="structural2">Structural 2</option><option value="structural</option><option value="hybrid">Hybrid</option><option value="momentum">Momentum</option><option value="reversal">Reversal</option></select></div>
           <div id="tt-cfg-seq-master-container" style="display:none; flex-direction:column; gap:4px; margin-top:4px;">
             <label style="font-size:10px; color:#7a8499;">DNA JSON Config</label>
             <textarea id="tt-cfg-seq-master-json" placeholder='Paste JSON DNA here...' style="width:100%; height:120px; background:#1e2338; border:1px solid #3a4260; color:#e0e6f0; border-radius:4px; font-size:10px; font-family:monospace; resize:vertical;"></textarea>
@@ -213,11 +215,15 @@
     document.getElementById('tt-config-toggle').addEventListener('click', () => document.getElementById('tt-config').classList.toggle('tt-open'));
     document.getElementById('tt-cfg-strategy-mode').addEventListener('change', function () {
       cfg.strategyMode = this.value;
+      isArmed = false;
+      armedSignal = null;
+      microTrapArmed = false;
+      microTrapSignal = null;
       updateSeqMasterUIVisibility();
       initDnaWorker();
       saveCfg();
       // Auto-Focus/Expand Diagnostic Panels
-      if (cfg.strategyMode === 'discoveryEvolution' || cfg.strategyMode === 'statisticalDna') {
+      if (cfg.strategyMode === 'discoveryEvolution' || cfg.strategyMode === 'statisticalDna' || cfg.strategyMode === 'microTrap') {
           const config = document.getElementById('tt-config');
           if (config && config.classList.contains('tt-open')) config.classList.remove('tt-open');
           updateDnaUI({}); // Force panel layout update
@@ -417,6 +423,12 @@
         const regimeName = currentRegime === 'A' ? 'A · CONSOLIDATION' : (currentRegime === 'B' ? 'B · TRENDING' : (currentRegime === 'C' ? 'C · VOLATILITY' : 'D · NOISE'));
         regimeDisplay.textContent = `${regimeName} · BBW: ${bbWidth.toFixed(2)}`;
       }
+    } else if (cfg.strategyMode === 'microTrap') {
+      if (regimeRow) regimeRow.style.display = 'flex';
+      if (regimeDisplay) {
+        regimeDisplay.textContent = `ROC: ${currentROC.toFixed(2)} | TRAP: ${microTrapArmed ? 'LOCKED (' + microTrapSignal.action + ')' : (microTrapCooldown > 0 ? 'COOLDOWN' : 'TRACKING')}`;
+        regimeDisplay.style.color = microTrapArmed ? '#f0c040' : (microTrapCooldown > 0 ? '#e04040' : '#7ec8e3');
+      }
     } else if (cfg.strategyMode === 'unleashed') {
       if (regimeRow) regimeRow.style.display = 'flex';
       if (regimeDisplay) {
@@ -438,6 +450,7 @@
   function handleTick(tick) {
     if (!tick || tick.symbol !== resolvedSymbol) return;
     const price = parseFloat(tick.quote), epoch = tick.epoch, now = Date.now(); tickSeq++;
+    if (microTrapCooldown > 0) microTrapCooldown--;
     const prevTick = ticks.length ? ticks[ticks.length - 1] : null;
     const delta = prevTick ? price - prevTick.price : 0, deltaSteps = Math.round(delta / 0.1), direction = delta > 0 ? 1 : (delta < 0 ? -1 : 0);
     const deltaTime = prevTick ? (now - prevTick.receivedAt) : 1000;
@@ -557,9 +570,10 @@
       lastUI.dirStreak = streakStr;
     }
 
-    if (['statisticalDna', 'discoveryEvolution'].includes(cfg.strategyMode) && dnaWorker) {
+    if (['statisticalDna', 'discoveryEvolution', 'microTrap'].includes(cfg.strategyMode) && dnaWorker) {
       const priceHistory = ticks.map(t => t.price);
       dnaWorker.postMessage({ type: 'compute', prices: priceHistory, config: parsedDnaConfig });
+
       if (cfg.strategyMode === 'discoveryEvolution') {
         // Confirmation Tick Handling
         if (isArmed && armedSignal) {
@@ -575,6 +589,28 @@
           }
         }
         checkDiscoveryMatch();
+      } else if (cfg.strategyMode === 'microTrap') {
+        if (microTrapArmed && microTrapSignal) {
+            const tickDir = price > prevTick.price ? "U" : (price < prevTick.price ? "D" : "Z");
+            if (tickDir === "Z") {
+                microTrapZCounter++;
+                if (microTrapZCounter >= 3) {
+                    microTrapArmed = false;
+                    console.log("[TRAP] DISARMED: Momentum flatline (Z3)");
+                }
+            } else if (microTrapSignal.action === "PUT" && tickDir === "D") {
+                triggerSignal("SELL", 100, "TRAP FIRED: PUT");
+                microTrapArmed = false;
+                microTrapCooldown = 10;
+            } else if (microTrapSignal.action === "CALL" && tickDir === "U") {
+                triggerSignal("BUY", 100, "TRAP FIRED: CALL");
+                microTrapArmed = false;
+                microTrapCooldown = 10;
+            } else {
+                microTrapArmed = false;
+                console.log("[TRAP] DISARMED: Trap failed (wrong direction)");
+            }
+        }
       }
     }
 
@@ -990,7 +1026,7 @@
     const mode = cfg.strategyMode;
     const currentTickIndex = tickSeq;
 
-    if (mode !== 'unleashed') {
+    if (mode !== 'unleashed' && mode !== 'microTrap') {
       if (currentTickIndex - lastSignalTickIndex < cfg.postTradeCooldownTicks || Date.now() - lastTradeClosedAt < cfg.postTradeCooldownMs) return;
     }
     if (realExecState !== 'IDLE') return;
@@ -1138,8 +1174,9 @@
   async function initDnaWorker() {
     const isDna = cfg.strategyMode === 'statisticalDna';
     const isEvo = cfg.strategyMode === 'discoveryEvolution';
+    const isTrap = cfg.strategyMode === 'microTrap';
 
-    if (!isDna && !isEvo) {
+    if (!isDna && !isEvo && !isTrap) {
       if (dnaWorker) {
         dnaWorker.terminate();
         dnaWorker = null;
@@ -1162,6 +1199,8 @@
           handleDnaMetrics(e.data.data);
         } else if (e.data.type === 'NEW_SIGNAL') {
           handleNewDiscoverySignal(e.data.data);
+        } else if (e.data.type === 'MICRO_TRAP_ARMED') {
+          handleMicroTrapArmed(e.data.data);
         }
       };
     } catch (e) {
@@ -1255,8 +1294,23 @@
         currentRegime = data.regime || 'D';
         currentEntropy = data.entropy || 0;
         currentStrain = data.stats ? data.stats.str : 0;
+        if (data.stats && data.stats.roc2 !== undefined) {
+          currentROC = data.stats.roc2;
+        }
     }
     updateDnaUI({ metrics: data });
+  }
+
+  function handleMicroTrapArmed(data) {
+    if (cfg.strategyMode !== 'microTrap') return;
+    if (microTrapCooldown > 0) return;
+    if (microTrapArmed) return;
+
+    microTrapArmed = true;
+    microTrapSignal = data;
+    microTrapZCounter = 0;
+    currentROC = data.hitState.roc;
+    console.log("[TRAP] LOCKED:", data.action, data.hitState);
   }
 
   function handleDnaSignal(data) {

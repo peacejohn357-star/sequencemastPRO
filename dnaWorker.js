@@ -24,6 +24,7 @@ self.onmessage = function(e) {
         const ema50Arr = calcEMA(prices, 50);
         const stdDev20Arr = calcStdDev(prices, 20);
         const strainArr = calcStrain(prices, ema50Arr, stdDev20Arr);
+        const roc2Arr = calcAbsoluteROC(prices, 2);
 
         // Continuous metric reporting
         const n = prices.length;
@@ -47,9 +48,11 @@ self.onmessage = function(e) {
                 bbw: currentBBW,
                 bbwDelta: bbwDelta,
                 str: currentStr,
-                strDelta: strDelta
+                strDelta: strDelta,
+                roc2: currentRSI // Fallback if rsi calculation is somehow needed but let's use actual ROC2
             }
         };
+        metricsData.stats.roc2 = roc2Arr[n - 1];
 
         self.postMessage({
             type: 'metrics',
@@ -57,6 +60,7 @@ self.onmessage = function(e) {
         });
 
         discoverPatterns(prices, rsiArr, bbwArr, strainArr, regime);
+        checkMicroTrap(prices, ema10Arr, roc2Arr);
     }
 };
 
@@ -255,6 +259,53 @@ function calcStrain(prices, ema50Arr, stdDev20Arr) {
         const std2 = Math.max(stdDev20Arr[i], 0.0001) * 2;
         return Math.abs(p - ema50Arr[i]) / std2;
     });
+}
+
+function calcAbsoluteROC(prices, period) {
+    const roc = new Array(prices.length).fill(0);
+    for (let i = period; i < prices.length; i++) {
+        roc[i] = prices[i] - prices[i - period];
+    }
+    return roc;
+}
+
+function checkMicroTrap(prices, ema10Arr, roc2Arr) {
+    const n = prices.length;
+    if (n < 10) return;
+
+    const currentPrice = prices[n - 1];
+    const ema10 = ema10Arr[n - 1];
+    const roc2 = roc2Arr[n - 1];
+    const prevRoc2 = roc2Arr[n - 2];
+
+    const isRocFlat = Math.abs(roc2 - prevRoc2) <= 0.1001; // Accounting for precision
+    const distToEma = Math.abs(currentPrice - ema10);
+    const isHuggingEma = distToEma <= 0.2001;
+
+    // Bearish Trap Logic (PUT)
+    const last5 = prices.slice(-5);
+    const isBelowEma = last5.every(p => p < ema10);
+    if (isBelowEma && isHuggingEma && isRocFlat) {
+        self.postMessage({
+            type: 'MICRO_TRAP_ARMED',
+            data: {
+                action: 'PUT',
+                hitState: { price: currentPrice, ema: ema10, roc: roc2 }
+            }
+        });
+    }
+
+    // Bullish Trap Logic (CALL)
+    const isAboveEma = last5.every(p => p > ema10);
+    if (isAboveEma && isHuggingEma && isRocFlat) {
+        self.postMessage({
+            type: 'MICRO_TRAP_ARMED',
+            data: {
+                action: 'CALL',
+                hitState: { price: currentPrice, ema: ema10, roc: roc2 }
+            }
+        });
+    }
 }
 
 function discoverPatterns(prices, rsiArr, bbwArr, strainArr, currentRegime) {
