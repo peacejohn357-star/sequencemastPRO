@@ -1006,15 +1006,27 @@
 
     for (const [key, pattern] of activeTradePool.entries()) {
       if (pattern.sequence === sequenceStr) {
-        const rsiMatch = Math.abs(currentRSI - pattern.hitState.rsi) <= 0.2;
-        const bbwMatch = Math.abs(currentBBW - pattern.hitState.bbw) <= 0.0005;
-        const strMatch = Math.abs(currentStr - pattern.hitState.str) <= 0.05;
+        const rsiDiff = Math.abs(currentRSI - pattern.hitState.rsi);
+        const bbwDiff = Math.abs(currentBBW - pattern.hitState.bbw);
+        const strDiff = Math.abs(currentStr - pattern.hitState.str);
+
+        const rsiMatch = rsiDiff <= 0.2;
+        const bbwMatch = bbwDiff <= 0.0005;
+        const strMatch = strDiff <= 0.05;
         const regimeMatch = currentRegime === pattern.regime;
 
         if (rsiMatch && bbwMatch && strMatch && regimeMatch) {
           isArmed = true;
           armedSignal = pattern;
-          console.log("[EVO] ARMED:", pattern.sequence, pattern.action);
+          console.log(`[EVO] ARMED: ${pattern.sequence} ${pattern.action}`);
+        } else if (cfg.debugSignals && tickSeq % 5 === 0) {
+          // Log why it didn't arm
+          let reasons = [];
+          if (!rsiMatch) reasons.push(`RSI Δ:${rsiDiff.toFixed(2)}`);
+          if (!bbwMatch) reasons.push(`BBW Δ:${bbwDiff.toFixed(5)}`);
+          if (!strMatch) reasons.push(`STR Δ:${strDiff.toFixed(2)}`);
+          if (!regimeMatch) reasons.push(`Regime ${currentRegime} vs ${pattern.regime}`);
+          console.warn(`[EVO] SEQUENCE MATCH (${pattern.sequence}) BUT GATED: ${reasons.join(", ")}`);
         }
       }
     }
@@ -1210,24 +1222,36 @@
   }
 
   function handleNewDiscoverySignal(data) {
-    // Check if we have this pattern already but with different coordinates
-    let isDuplicate = false;
+    let duplicateKey = null;
     for (const [key, existing] of activeTradePool.entries()) {
-        if (existing.sequence === data.sequence && existing.action === data.action && existing.regime === data.regime) {
-            const rsiMatch = Math.abs(existing.hitState.rsi - data.hitState.rsi) <= 0.2;
-            const bbwMatch = Math.abs(existing.hitState.bbw - data.hitState.bbw) <= 0.0005;
-            const strMatch = Math.abs(existing.hitState.str - data.hitState.str) <= 0.05;
-            if (rsiMatch && bbwMatch && strMatch) {
-                isDuplicate = true;
-                break;
-            }
+      if (existing.sequence === data.sequence && existing.action === data.action && existing.regime === data.regime) {
+        const rsiMatch = Math.abs(existing.hitState.rsi - data.hitState.rsi) <= 0.2;
+        const bbwMatch = Math.abs(existing.hitState.bbw - data.hitState.bbw) <= 0.0005;
+        const strMatch = Math.abs(existing.hitState.str - data.hitState.str) <= 0.05;
+        if (rsiMatch && bbwMatch && strMatch) {
+          duplicateKey = key;
+          break;
         }
+      }
     }
 
-    if (!isDuplicate) {
-        const uniqueKey = `${data.sequence}-${data.action}-${Date.now()}`;
-        activeTradePool.set(uniqueKey, data);
-        updateDiscoveryUI(data);
+    if (duplicateKey) {
+      const existing = activeTradePool.get(duplicateKey);
+      existing.count = (existing.count || 1) + 1;
+
+      // Diagnostic Logging
+      if (cfg.debugSignals) {
+        console.log(`[EVO] DUPLICATE: ${data.sequence} ${data.action} | Count: ${existing.count}`);
+        if (realExecState !== 'IDLE') console.warn(` -> Gated: Engine Busy (${realExecState})`);
+        else if (isArmed) console.warn(` -> Gated: Already Armed for ${armedSignal?.sequence}`);
+      }
+
+      updateDiscoveryUI(existing);
+    } else {
+      const uniqueKey = `${data.sequence}-${data.action}-${Date.now()}`;
+      data.count = 1;
+      activeTradePool.set(uniqueKey, data);
+      updateDiscoveryUI(data);
     }
   }
 
@@ -1247,6 +1271,16 @@
   function updateDiscoveryUI(s, isFail = false, actualMetrics = null) {
     const container = isFail ? document.getElementById('tt-fail-exec-list') : document.getElementById('tt-discovery-feed');
     if (!container) return;
+
+    // For non-fail UI, check if element already exists to handle duplicates/reordering
+    if (!isFail && s.uiEl && s.uiEl.parentNode === container) {
+      container.prepend(s.uiEl);
+      const countDisplay = s.count > 1 ? ` <span style="color:#f0a060;">[${s.count}]</span>` : '';
+      const bTag = s.uiEl.querySelector('b');
+      if (bTag) bTag.innerHTML = `${s.sequence} ${s.action}${countDisplay}`;
+      return;
+    }
+
     const el = document.createElement('div');
     el.className = "tt-discovery-row";
     el.style.borderBottom = '1px solid #333';
@@ -1268,9 +1302,10 @@
             </div>
         `;
     } else {
+        const countDisplay = s.count > 1 ? ` <span style="color:#f0a060;">[${s.count}]</span>` : '';
         el.innerHTML = `
             <div style="display:flex; justify-content:space-between; margin-bottom: 4px;">
-                <b style="color:#00ffff;">${s.sequence} ${s.action}</b>
+                <b style="color:#00ffff;">${s.sequence} ${s.action}${countDisplay}</b>
                 <span style="color:#888;">ext: ${s.ext || '?'} | ${displayRegime}</span>
             </div>
             <div style="display:flex; justify-content:space-between; color:#fff;">
@@ -1279,6 +1314,7 @@
                 <div>STR: <b>${s.hitState.str.toFixed(2)}</b></div>
             </div>
         `;
+        s.uiEl = el;
     }
 
     container.prepend(el);
