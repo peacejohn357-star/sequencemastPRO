@@ -340,6 +340,12 @@ function discoverPatterns(prices, rsiArr, bbwArr, strainArr, currentRegime) {
         const presequenceEndIdx = streakStartIdx - 1;
         const presequenceStartIdx = presequenceEndIdx - 4;
 
+        // Validation: Tick RIGHT BEFORE the streak must be OPPOSITE direction
+        const lastPreDir = dirs[presequenceEndIdx];
+        if (lastPreDir === streakType) {
+            return; // Not a clean discovery "hit" point
+        }
+
         if (presequenceStartIdx >= 1) {
             let sequenceStr = "";
             for (let i = presequenceStartIdx; i <= presequenceEndIdx; i++) {

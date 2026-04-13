@@ -582,7 +582,7 @@
     tickDirections.push(dirChar);
     if (tickDirections.length > 20) tickDirections.shift();
 
-    const state = { epoch, price, direction, deltaSteps, deltaTime, speed, absSpeed, speedTrend, upStreak, downStreak, lastDigit, deltaChange: deltaChangeVal, receivedAt: now, accel, intensity, preSpeed, acceleration, trendEma, ema10, ema50, stdDev10, stdDev20, strain: currentStrain, adx, rsi, speed5, accel5 };
+    const state = { epoch, price, direction, deltaSteps, deltaTime, speed, absSpeed, speedTrend, upStreak, downStreak, lastDigit, deltaChange: deltaChangeVal, receivedAt: now, accel, intensity, preSpeed, acceleration, trendEma, ema10, ema50, stdDev10, stdDev20, strain: currentStrain, adx, rsi, speed5, accel5, dirChar };
     ticks.push(state); if (ticks.length > TICK_BUF) ticks.shift();
     speedHistory.push(absSpeed); if (speedHistory.length > SPEED_BUF) speedHistory.shift();
     calculatePercentiles(); lastTickProcessedAt = Date.now();
@@ -1059,15 +1059,9 @@
   }
 
   function checkDiscoveryMatch() {
-    if (ticks.length < 6) return;
-    const last6 = ticks.slice(-6);
-    let lastDirMatch = "U";
-    const sequenceStr = last6.slice(1).map((t, i) => {
-      const d = t.price - last6[i].price;
-      if (d > 0) lastDirMatch = "U";
-      else if (d < 0) lastDirMatch = "D";
-      return lastDirMatch;
-    }).join("");
+    if (ticks.length < 5) return;
+    const last5 = ticks.slice(-5);
+    const sequenceStr = last5.map(t => t.dirChar).join("");
 
     const t0 = ticks[ticks.length - 1];
     const currentRSI = t0.rsi;
